@@ -19,6 +19,50 @@ disagree, the spec wins.
 
 ---
 
+## Resuming: the first hour
+
+Read §2 before touching anything. It records seventeen decisions that are
+already wired through the model, the layout engine and the tests, including the
+ones spec §33 explicitly delegates to implementation. Re-deciding one of them
+silently is the cheapest way to make this codebase incoherent.
+
+Then, in order:
+
+1. **Get the suite compiling.** §3 Step A′ — a table of mechanical
+   substitutions, roughly a hundred call sites, almost all in `#[cfg(test)]`
+   modules. Nothing in it needs a decision.
+2. **Run it.** `cargo +1.90.0 test --all-targets --all-features`. The Markdown
+   suite — including the fifteen characterization tests committed first — is
+   the regression net: if it is green, the generalization did not cost the
+   reader anything. The structured tests in `src/document/{json,yaml}.rs`,
+   `src/document/structured/`, `src/layout/structured.rs` and
+   `src/app/toc.rs` have **never been executed**. Expect the layout ones to
+   disagree with the implementation; when they do, decide which is right by
+   the spec (§5.1, §5.2, §11.3, §15.7), not by which is easier to change.
+3. **Finish the port's debts** — §3 Step A″. Three small items: the status
+   line's format label and path breadcrumb, the cursor-row highlight for
+   structured documents, and the two `LayoutOptions` fields that nothing sets
+   from the config yet.
+4. **Then Steps B–F**: CLI and configuration, tests and fixtures, docs and
+   packaging, and the compliance audit.
+
+The work is deliberately staged so that step 2 is the first point where
+anything can be *observed*. Everything before it is types and structure; treat
+the first green run as the real checkpoint, and commit there.
+
+### Where the pieces are
+
+* `src/document/model.rs` is the format boundary — start there to understand
+  how anything above it works.
+* `src/document/structured/ast.rs` explains the node model and why it is flat.
+* `src/layout/structured.rs` explains why rows come from nodes.
+* `src/document/yaml.rs` explains what a YAML *reader* has to keep.
+
+Each of those files opens with the reasoning; the rest of this document is the
+decisions those files assume.
+
+---
+
 ## 0. How to build and test
 
 The repository's `rust-toolchain.toml` says `stable`. On the machine this work
