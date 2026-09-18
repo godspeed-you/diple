@@ -1,0 +1,28 @@
+---
+source: tests/render_snapshots.rs
+expression: "render_structured(&model, width)"
+---
+{
+  name: "diple"
+  version: "2.0.0"
+  repository: {
+    type: "git"
+    url: "https://github.com/godspeed-you/diple"
+    mirrors: {
+      primary: "origin"
+      backup: null
+  build: {
+    features: [
+      [0]: "syntax-onig"
+      [1]: "syntax-fancy"
+    profile: {
+      release: {
+        lto: true
+        codegen-units: 1
+        strip: "symbols"
+  keywords: [
+    [0]: "markdown"
+    [1]: "pager"
+    [2]: "terminal"
+  maintained: true
+  downloads: 128947

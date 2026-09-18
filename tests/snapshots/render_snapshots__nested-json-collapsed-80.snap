@@ -1,0 +1,19 @@
+---
+source: tests/render_snapshots.rs
+expression: text
+---
+  {
+    name: "diple"
+    version: "2.0.0"
+▶   repository: {3 members}
+▼   build: {
+▼     features: [
+        [0]: "syntax-onig"
+        [1]: "syntax-fancy"
+▶     profile: {1 member}
+▼   keywords: [
+      [0]: "markdown"
+      [1]: "pager"
+      [2]: "terminal"
+    maintained: true
+    downloads: 128947

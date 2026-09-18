@@ -1,6 +1,10 @@
 //! Golden snapshot tests: every fixture is laid out at 40, 80 and 120 columns
 //! and compared against a committed plain-text snapshot.
 //!
+//! The Markdown fixtures come first, then the structured (JSON and YAML) ones
+//! with the views a structured document has that a Markdown one does not —
+//! collapsed containers, the outline, a revealed search match, a split.
+//!
 //! The plain-text serialisation is `RenderTree::to_plain_text`, which is also
 //! what `--color never` output is built from.
 //!
@@ -15,7 +19,7 @@
 //!   line instead.
 
 use diple::document::markdown::{self, parse};
-use diple::document::{load, DocumentModel, FoldId, FoldState, FormatRequest, SourceDocument};
+use diple::document::{load, DocumentModel, FoldId, FormatRequest, SourceDocument};
 use diple::layout::{Layout, LayoutOptions};
 use diple::render::ansi::to_ansi_text;
 use diple::render::primitives::LineKind;
@@ -235,4 +239,384 @@ fn ascii_fallback_and_code_options() {
     opts.code_wrap = true;
     let tree = Layout::build(&doc, &opts);
     insta::assert_snapshot!("code-blocks-ascii-numbered-80", tree.to_plain_text());
+}
+
+// ---------------------------------------------------------------------------
+// Structured documents (JSON and YAML)
+// ---------------------------------------------------------------------------
+//
+// The same contract as above, for the formats added in 2.0: a committed
+// plain-text snapshot per (fixture, width, view). What each of these has to
+// show is a *semantic* rendering rather than a pretty-printed copy of the
+// file — nesting by indentation, source order kept, keys distinguishable from
+// values, a collapsed container standing for its contents with a summary, and
+// an ASCII fallback that says the same things without box drawing.
+//
+// Widths: 80 is the reference, 40 and 56 are the narrow terminals §24.3 warns
+// about, where an indented deep key has almost no room left for its value.
+
+/// Load a structured fixture the way the pager does: by name, so the
+/// extension picks the format.
+fn structured_fixture(name: &str) -> DocumentModel {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let text = std::fs::read_to_string(&path).expect("read fixture");
+    load(FormatRequest::Auto, SourceDocument::new(name, &text))
+        .unwrap_or_else(|e| panic!("{name} must parse:\n{}", e.report()))
+        .model
+}
+
+/// Lay a structured fixture out at `width`, everything expanded.
+fn render_structured(model: &DocumentModel, width: usize) -> String {
+    let theme = Theme::dark();
+    Layout::build(model, &LayoutOptions::new(width, &theme)).to_plain_text()
+}
+
+/// The fold whose container row carries the mapping key `key`.
+///
+/// Folds are addressed by what the reader sees rather than by index, so a
+/// fixture gaining an entry does not silently move these snapshots to a
+/// different container.
+fn fold_with_key(model: &DocumentModel, key: &str) -> FoldId {
+    let doc = model.as_structured().expect("structured");
+    (0..model.fold_parents().len())
+        .find(|fold| {
+            model
+                .fold_node(*fold)
+                .and_then(|node| doc.node(node))
+                .and_then(|node| node.key())
+                .is_some_and(|k| k.text == key)
+        })
+        .unwrap_or_else(|| panic!("no foldable container keyed {key:?}"))
+}
+
+/// A JSON document, expanded, at the reference width and at two narrow ones.
+#[test]
+fn json_renders_expanded() {
+    let model = structured_fixture("nested.json");
+    for width in [40usize, 56, 80] {
+        insta::assert_snapshot!(
+            format!("nested-json-{width}"),
+            render_structured(&model, width)
+        );
+    }
+    let arrays = structured_fixture("array-of-objects.json");
+    insta::assert_snapshot!("array-of-objects-json-40", render_structured(&arrays, 40));
+    insta::assert_snapshot!("array-of-objects-json-80", render_structured(&arrays, 80));
+
+    // Escapes, CJK, emoji and a non-ASCII key: the width arithmetic of the
+    // structured layout has to agree with the Markdown engine's.
+    let unicode = structured_fixture("unicode-escapes.json");
+    insta::assert_snapshot!("unicode-escapes-json-40", render_structured(&unicode, 40));
+    insta::assert_snapshot!("unicode-escapes-json-80", render_structured(&unicode, 80));
+
+    // Twenty-four levels at 40 columns: the point where indentation alone
+    // would leave nothing for the value.
+    let deep = structured_fixture("deeply-nested.json");
+    insta::assert_snapshot!("deeply-nested-json-40", render_structured(&deep, 40));
+}
+
+/// A partially collapsed JSON document: two containers stand for their
+/// contents with a summary, everything else is still expanded.
+#[test]
+fn json_renders_partially_collapsed() {
+    let model = structured_fixture("nested.json");
+    let theme = Theme::dark();
+    let mut folds = model.fold_state();
+    folds.collapse(fold_with_key(&model, "repository"));
+    folds.collapse(fold_with_key(&model, "profile"));
+    let opts = LayoutOptions::new(80, &theme).with_folds(&folds);
+    let text = Layout::build(&model, &opts).to_plain_text();
+
+    assert!(
+        !text.contains("codegen-units"),
+        "a collapsed container still shows its contents:\n{text}"
+    );
+    insta::assert_snapshot!("nested-json-collapsed-80", text);
+}
+
+/// The ASCII fallback: no box drawing, no `▼`/`▶`, and the same information.
+#[test]
+fn json_renders_without_unicode() {
+    let model = structured_fixture("nested.json");
+    let theme = Theme::dark();
+    let mut folds = model.fold_state();
+    folds.collapse(fold_with_key(&model, "repository"));
+    let mut opts = LayoutOptions::new(80, &theme).with_folds(&folds);
+    opts.unicode = false;
+    let text = Layout::build(&model, &opts).to_plain_text();
+
+    for marker in ['▼', '▶', '│', '─'] {
+        assert!(
+            !text.contains(marker),
+            "{marker:?} survived the ASCII fallback:\n{text}"
+        );
+    }
+    assert!(text.is_ascii() || text.contains("http"), "{text}");
+    insta::assert_snapshot!("nested-json-ascii-80", text);
+}
+
+/// `--color never`: the SGR serialisation at [`ColorLevel::None`] is the
+/// plain text, byte for byte, with no escape sequence anywhere in it.
+#[test]
+fn json_renders_without_colour() {
+    let model = structured_fixture("nested.json");
+    let theme = Theme::dark();
+    let tree = Layout::build(&model, &LayoutOptions::new(80, &theme));
+    let text = to_ansi_text(&tree, ColorLevel::None);
+
+    assert!(
+        !text.contains('\u{1b}'),
+        "an escape leaked into --color never"
+    );
+    assert_eq!(
+        text,
+        tree.to_plain_text(),
+        "the two serialisations disagree"
+    );
+    insta::assert_snapshot!("nested-json-nocolor-80", text);
+}
+
+/// YAML, expanded, including the narrow widths where a deeply indented
+/// container key and its value compete for the same columns.
+#[test]
+fn yaml_renders_expanded() {
+    let model = structured_fixture("k8s-deployment.yaml");
+    for width in [40usize, 56, 80] {
+        insta::assert_snapshot!(
+            format!("k8s-deployment-yaml-{width}"),
+            render_structured(&model, width)
+        );
+    }
+}
+
+/// Comments are content: they stay, above their entry and beside it, and they
+/// stay in source order.
+#[test]
+fn yaml_renders_comments() {
+    let model = structured_fixture("comments.yaml");
+    let text = render_structured(&model, 80);
+    assert!(
+        text.contains("Every comment in this file must survive parsing"),
+        "a comment was dropped:\n{text}"
+    );
+    insta::assert_snapshot!("comments-yaml-80", text);
+    insta::assert_snapshot!("comments-yaml-40", render_structured(&model, 40));
+}
+
+/// Anchors and aliases are shown as references. An alias must never be
+/// expanded into a copy of what it points at.
+#[test]
+fn yaml_renders_anchors_and_aliases() {
+    let model = structured_fixture("anchors.yaml");
+    let text = render_structured(&model, 80);
+    assert!(
+        text.contains("&defaults"),
+        "the anchor is not shown:\n{text}"
+    );
+    assert!(
+        text.contains("*defaults"),
+        "the alias is not shown:\n{text}"
+    );
+    assert_eq!(
+        text.matches("adapter").count(),
+        1,
+        "an alias was expanded into a copy of its anchor:\n{text}"
+    );
+    insta::assert_snapshot!("anchors-yaml-80", text);
+    insta::assert_snapshot!("anchors-yaml-40", render_structured(&model, 40));
+}
+
+/// Block scalars keep their style and their line structure.
+#[test]
+fn yaml_renders_block_scalars() {
+    let model = structured_fixture("block-scalars.yaml");
+    insta::assert_snapshot!("block-scalars-yaml-80", render_structured(&model, 80));
+    insta::assert_snapshot!("block-scalars-yaml-40", render_structured(&model, 40));
+}
+
+/// A stream is three documents, each a root of its own, in source order.
+#[test]
+fn yaml_renders_a_multi_document_stream() {
+    let model = structured_fixture("multi-document.yaml");
+    let text = render_structured(&model, 80);
+    assert_eq!(
+        model.as_structured().expect("structured").roots().len(),
+        3,
+        "the stream lost a document"
+    );
+    for kind in ["ConfigMap", "Service", "Secret"] {
+        assert!(text.contains(kind), "{kind} is missing:\n{text}");
+    }
+    insta::assert_snapshot!("multi-document-yaml-80", text);
+    insta::assert_snapshot!("multi-document-yaml-40", render_structured(&model, 40));
+}
+
+/// The outline sidebar's content, for both formats.
+///
+/// The sidebar widget itself is `app`-internal; what is pinned here is what it
+/// is given — one entry per node, in document order, nested by depth — which
+/// is the part a structured document decides.
+#[test]
+fn the_outline_of_a_structured_document() {
+    for name in ["nested.json", "k8s-deployment.yaml"] {
+        let model = structured_fixture(name);
+        let text: String = model
+            .outline()
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}{}{}\n",
+                    "  ".repeat(entry.depth),
+                    entry.text,
+                    if entry.fold.is_some() { " [fold]" } else { "" }
+                )
+            })
+            .collect();
+        let stem = name.replace('.', "-");
+        insta::assert_snapshot!(format!("{stem}-outline"), text);
+    }
+}
+
+/// A search match inside a collapsed container: hidden first, then revealed.
+///
+/// Both halves are in one snapshot because the pair is the claim — the row is
+/// absent while its container is collapsed, and revealing the match opens
+/// exactly the ancestors needed to show it, leaving the rest collapsed.
+#[test]
+fn a_search_match_is_revealed_out_of_a_collapsed_container() {
+    let model = structured_fixture("nested.json");
+    let theme = Theme::dark();
+    let query = "symbols";
+
+    let hits = model.search_index().find(query, false);
+    let hit = *hits.first().expect("the query must hit");
+
+    let mut folds = model.fold_state();
+    folds.collapse_all();
+    assert!(
+        model.is_hidden(hit.node, &folds),
+        "the match is not hidden to begin with"
+    );
+    let hidden =
+        Layout::build(&model, &LayoutOptions::new(80, &theme).with_folds(&folds)).to_plain_text();
+    assert!(
+        !hidden.contains(query),
+        "a collapsed match is still on screen"
+    );
+
+    model.reveal(hit.node, &mut folds);
+    assert!(!model.is_hidden(hit.node, &folds), "reveal did nothing");
+    let revealed =
+        Layout::build(&model, &LayoutOptions::new(80, &theme).with_folds(&folds)).to_plain_text();
+    assert!(revealed.contains(query), "the revealed match has no row");
+
+    insta::assert_snapshot!(
+        "nested-json-search-reveal-80",
+        format!("collapsed:\n{hidden}\nrevealed for /{query}:\n{revealed}")
+    );
+}
+
+/// The two panes of a split, side by side.
+///
+/// The split *renderer* lives in `app` and is not reachable from an
+/// integration test; what a split does to the document layer is give each
+/// pane half the terminal, so each pane's content is laid out at that width
+/// and the two are composed here. That is the part a wrapping bug shows up
+/// in: 40 columns per pane on an 80-column terminal is exactly the narrow
+/// case of §24.3.
+fn split(left: &DocumentModel, right: &DocumentModel, pane: usize) -> String {
+    let left = render_structured(left, pane);
+    let right = render_structured(right, pane);
+    let mut left = left.lines();
+    let mut right = right.lines();
+    let mut out = String::new();
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => break,
+            (l, r) => {
+                let l = l.unwrap_or("");
+                let r = r.unwrap_or("");
+                let pad = pane.saturating_sub(diple::layout::unicode::width(l));
+                out.push_str(l);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" │ ");
+                out.push_str(r);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// A split with a Markdown document beside a YAML one: two formats on screen
+/// at once, each rendered by its own engine.
+#[test]
+fn a_split_of_markdown_and_yaml() {
+    let markdown = DocumentModel::markdown(parse(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/readme.md"),
+        )
+        .expect("fixture"),
+    ));
+    let yaml = structured_fixture("k8s-deployment.yaml");
+    insta::assert_snapshot!("split-markdown-yaml-40x2", split(&markdown, &yaml, 40));
+}
+
+/// A split of two JSON documents: the same engine twice, at pane width.
+#[test]
+fn a_split_of_two_json_documents() {
+    let left = structured_fixture("nested.json");
+    let right = structured_fixture("array-of-objects.json");
+    insta::assert_snapshot!("split-json-json-40x2", split(&left, &right, 40));
+}
+
+/// Every structured row fits the terminal width, and a narrow terminal
+/// really does render differently from a wide one.
+///
+/// This is the invariant behind the 40- and 56-column snapshots: they exist
+/// to catch a wrapping bug, which they can only do if wrapping happens at
+/// all. `deeply-nested.json` is the exception and is excluded on purpose —
+/// twenty-four levels of indentation leave no columns to wrap into, so what
+/// it pins is the behaviour at the point where indentation alone exceeds the
+/// terminal, which its snapshot shows.
+#[test]
+fn structured_rows_fit_the_terminal_width() {
+    const FIXTURES: [&str; 6] = [
+        "nested.json",
+        "array-of-objects.json",
+        "unicode-escapes.json",
+        "k8s-deployment.yaml",
+        "block-scalars.yaml",
+        "anchors.yaml",
+    ];
+    for name in FIXTURES {
+        let model = structured_fixture(name);
+        let wide = render_structured(&model, 80);
+        for width in [40usize, 56, 80] {
+            let text = render_structured(&model, width);
+            for (idx, line) in text.lines().enumerate() {
+                assert!(
+                    diple::layout::unicode::width(line) <= width,
+                    "{name}@{width} row {idx} is {} columns wide: {line:?}",
+                    diple::layout::unicode::width(line)
+                );
+            }
+        }
+        // A fixture that already fits in 40 columns has nothing for a narrow
+        // terminal to change; it is in this list for the width check above.
+        if wide
+            .lines()
+            .all(|line| diple::layout::unicode::width(line) <= 40)
+        {
+            continue;
+        }
+        assert_ne!(
+            render_structured(&model, 40),
+            wide,
+            "{name} renders identically at 40 and 80 columns, so its narrow \
+             snapshot cannot catch a wrapping bug"
+        );
+    }
 }

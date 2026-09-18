@@ -1,0 +1,23 @@
+---
+source: tests/render_snapshots.rs
+expression: "render_structured(&arrays, 80)"
+---
+[
+  [0]: {
+    id: 1
+    name: "Ada Lovelace"
+    roles: [
+      [0]: "author"
+      [1]: "maintainer"
+    active: true
+  [1]: {
+    id: 2
+    name: "Grace Hopper"
+    roles: [
+      [0]: "reviewer"
+    active: false
+  [2]: {
+    id: 3
+    name: "Alan Turing"
+    roles: []
+    active: null

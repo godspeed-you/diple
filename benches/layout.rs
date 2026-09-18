@@ -5,7 +5,7 @@ mod common;
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use diple::document::{parse, CodeBlock, NodeKind, Table};
+use diple::document::markdown::{parse, CodeBlock, NodeKind, Table};
 use diple::layout::code::{highlight, layout_code, CodeCache, CodeOptions};
 use diple::layout::table::{layout_table, TableOptions};
 use diple::render::theme::Theme;

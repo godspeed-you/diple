@@ -1,0 +1,48 @@
+---
+source: tests/render_snapshots.rs
+expression: text
+---
+root
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata [fold]
+    name: nginx
+    namespace: web
+    labels [fold]
+      app: nginx
+      tier: frontend
+  spec [fold]
+    replicas: 3
+    selector [fold]
+      matchLabels [fold]
+        app: nginx
+    template [fold]
+      metadata [fold]
+        labels [fold]
+          app: nginx
+      spec [fold]
+        containers [fold]
+          [0] [fold]
+            name: nginx
+            image: nginx:1.27-alpine
+            ports [fold]
+              [0] [fold]
+                containerPort: 80
+                protocol: TCP
+            env [fold]
+              [0] [fold]
+                name: LOG_LEVEL
+                value: info
+            resources [fold]
+              requests [fold]
+                cpu: 100m
+                memory: 128Mi
+              limits [fold]
+                cpu: 500m
+                memory: 512Mi
+            readinessProbe [fold]
+              httpGet [fold]
+                path: /healthz
+                port: 80
+              initialDelaySeconds: 5
+        restartPolicy: Always

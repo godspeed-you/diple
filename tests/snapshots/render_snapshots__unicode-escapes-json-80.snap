@@ -1,0 +1,16 @@
+---
+source: tests/render_snapshots.rs
+expression: "render_structured(&unicode, 80)"
+---
+{
+  plain: "Grüße aus München"
+  cjk: "日本語のテキスト"
+  emoji: "🚀 ✅ 🇩🇪"
+  escaped: "line one line two tabbed"
+  quotes: "she said "hello" and left"
+  backslash: "C:\Users\reader\notes.md"
+  solidus: "a/b"
+  bmp-escape: "äöü"
+  surrogate-pair: "😀"
+  control: "bell:� escape:�"
+  键: "unicode key"

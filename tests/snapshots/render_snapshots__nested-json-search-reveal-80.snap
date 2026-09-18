@@ -1,0 +1,29 @@
+---
+source: tests/render_snapshots.rs
+expression: "format!(\"collapsed:\\n{hidden}\\nrevealed for /{query}:\\n{revealed}\")"
+---
+collapsed:
+  {
+    name: "diple"
+    version: "2.0.0"
+▶   repository: {3 members}
+▶   build: {2 members}
+▶   keywords: [3 items]
+    maintained: true
+    downloads: 128947
+
+revealed for /symbols:
+  {
+    name: "diple"
+    version: "2.0.0"
+▶   repository: {3 members}
+▼   build: {
+▶     features: [2 items]
+▼     profile: {
+▼       release: {
+          lto: true
+          codegen-units: 1
+          strip: "symbols"
+▶   keywords: [3 items]
+    maintained: true
+    downloads: 128947

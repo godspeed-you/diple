@@ -1,0 +1,30 @@
+---
+source: tests/render_snapshots.rs
+expression: "render_structured(&model, 40)"
+---
+literal: |
+  line one
+  line two
+
+    indented line
+  last line
+literal_strip: |
+  no trailing newline
+literal_keep: |
+  keep the blank lines below
+
+folded: >
+  This long paragraph is folded onto
+    one line when it is read, because a
+    folded scalar joins its lines with
+    spaces.
+  A blank line stays a paragraph break.
+folded_strip: >
+  folded and stripped
+script: |
+  #!/bin/sh
+  set -eu
+  echo "hello: world"  # not a comment
+    in a literal block
+plain_multiline: this value continues
+  on the next line

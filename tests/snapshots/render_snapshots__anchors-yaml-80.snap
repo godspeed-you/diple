@@ -1,0 +1,30 @@
+---
+source: tests/render_snapshots.rs
+expression: text
+---
+defaults: &defaults
+  adapter: postgres
+  host: localhost
+  port: 5432
+  pool: 5
+logging: &logging
+  level: info
+  format: json
+development:
+  <<: *defaults
+  database: app_development
+test:
+  <<: *defaults
+  database: app_test
+  pool: 1
+production:
+  <<:
+    [0] *defaults
+    [1] *logging
+  database: app_production
+  host: db.internal
+  replicas:
+    [0] *defaults
+    [1] *logging
+aliased_scalar: &name "shared value"
+reuse: *name

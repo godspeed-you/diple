@@ -1,0 +1,71 @@
+---
+source: tests/render_snapshots.rs
+expression: "split(&markdown, &yaml, 40)"
+---
+Project Foo                              │ apiVersion: apps/v1
+═══════════                              │ kind: Deployment
+                                         │ metadata:
+Project Foo provides a fast, reliable    │   name: nginx
+way to frobnicate widgets from the       │   namespace: web
+command line. It is designed to feel     │   labels:
+familiar to anyone who has used less,    │     app: nginx
+grep, or other classic Unix tools.       │     tier: frontend
+                                         │ spec:
+CI                                       │   replicas: 3
+                                         │   selector:
+Installation                             │     matchLabels:
+────────────                             │       app: nginx
+                                         │   template:
+Install from crates.io:                  │     metadata:
+                                         │       labels:
+▏ cargo install foo                      │         app: nginx
+                                         │     spec:
+Or download a prebuilt binary from the   │       containers:
+releases page.                           │         [0]
+                                         │           name: nginx
+  From source                            │           image: nginx:1.27-alpine
+                                         │           ports:
+▏ git clone https://example.com/foo.git  │             [0]
+▏ cd foo                                 │               containerPort: 80
+▏ cargo build --release                  │               protocol: TCP
+                                         │           env:
+Usage                                    │             [0]
+─────                                    │               name: LOG_LEVEL
+                                         │               value: info
+Basic invocation:                        │           resources:
+                                         │             requests:
+▏ foo input.txt --output result.txt      │               cpu: 100m
+                                         │               memory: 128Mi
+Common flags:                            │             limits:
+                                         │               cpu: 500m
+┌──────┬────────────────┐                │               memory: 512Mi
+│ Flag │ Description    │                │           readinessProbe:
+├──────┼────────────────┤                │             httpGet:
+│ -v   │ verbose output │                │               path: /healthz
+│ -q   │ quiet mode     │                │               port: 80
+│ -o   │ output file    │                │             initialDelaySeconds: 5
+└──────┴────────────────┘                │       restartPolicy: Always
+                                         │ 
+▌ Note: Foo reads from stdin when no     │ 
+▌ input file is given.                   │ 
+                                         │ 
+Configuration                            │ 
+─────────────                            │ 
+                                         │ 
+Foo looks for ~/.config/foo/config.toml. │ 
+Example:                                 │ 
+                                         │ 
+▏ verbose = false                        │ 
+▏ threads = 4                            │ 
+                                         │ 
+See the configuration reference for      │ 
+details.                                 │ 
+                                         │ 
+License                                  │ 
+───────                                  │ 
+                                         │ 
+MIT. See LICENSE for the full text.      │ 
+                                         │ 
+──────────────────────────────────────── │ 
+                                         │ 
+Made with care by the Foo team.          │

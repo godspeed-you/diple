@@ -1,0 +1,29 @@
+---
+source: tests/render_snapshots.rs
+expression: "split(&left, &right, 40)"
+---
+{                                        │ [
+  name: "diple"                          │   [0]: {
+  version: "2.0.0"                       │     id: 1
+  repository: {                          │     name: "Ada Lovelace"
+    type: "git"                          │     roles: [
+    url: "https://github.com/godspeed-yo │       [0]: "author"
+      u/diple"                           │       [1]: "maintainer"
+    mirrors: {                           │     active: true
+      primary: "origin"                  │   [1]: {
+      backup: null                       │     id: 2
+  build: {                               │     name: "Grace Hopper"
+    features: [                          │     roles: [
+      [0]: "syntax-onig"                 │       [0]: "reviewer"
+      [1]: "syntax-fancy"                │     active: false
+    profile: {                           │   [2]: {
+      release: {                         │     id: 3
+        lto: true                        │     name: "Alan Turing"
+        codegen-units: 1                 │     roles: []
+        strip: "symbols"                 │     active: null
+  keywords: [                            │ 
+    [0]: "markdown"                      │ 
+    [1]: "pager"                         │ 
+    [2]: "terminal"                      │ 
+  maintained: true                       │ 
+  downloads: 128947                      │
