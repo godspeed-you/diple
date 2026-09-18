@@ -6,7 +6,7 @@
 //! * task items render `[x]`/`[ ]` as `☑`/`☐` (ASCII `[x]`/`[ ]`),
 //! * continuation blocks of an item are indented under the marker.
 
-use crate::document::List;
+use crate::document::markdown::List;
 
 /// Columns of indentation added per nesting level.
 pub const INDENT_PER_LEVEL: usize = 2;
@@ -72,7 +72,7 @@ pub fn marker_width(list: &List, unicode: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::parse;
+    use crate::document::markdown::parse;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::theme::Theme;
 

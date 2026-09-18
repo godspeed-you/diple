@@ -1,17 +1,48 @@
 //! Full-text search over the semantic document.
 //!
-//! Every node — including nested nodes, table cells and code — is flattened
-//! to plain text once; queries are substring searches, case-insensitive by
-//! default. Results are returned in document order.
+//! The index is a list of *fields*: a piece of text belonging to one semantic
+//! node, with a label saying which part of that node it is. Markdown nodes
+//! have a single [`MatchField::Body`]; a structured node has as many as it
+//! shows — its key, its value, its tag, its anchor, its comment — because a
+//! row that renders several distinguishable pieces has to be able to
+//! highlight the right one.
+//!
+//! Entries are built in document order and, within a node, in the order the
+//! fields are rendered, so results come out in reading order without sorting.
+//! Queries are literal substring searches, case-insensitive by default.
 
-use super::ast::{inlines_to_text, Document, Node, NodeId, NodeKind};
+use super::NodeId;
+
+/// Which part of a node a match landed in.
+///
+/// The renderer uses this to highlight the correct piece of a row: a match in
+/// a key and a match in that key's value are both "on" the same row, but only
+/// one of the two runs of text should light up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MatchField {
+    /// The whole textual content of a node (Markdown).
+    #[default]
+    Body,
+    /// A mapping key, an array index label, or another row label.
+    Label,
+    /// A scalar value.
+    Value,
+    /// A YAML comment attached to the node.
+    Comment,
+    /// An explicit YAML tag.
+    Tag,
+    /// A YAML anchor definition or alias reference.
+    Anchor,
+}
 
 /// A search hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
     /// Node containing the match.
     pub node: NodeId,
-    /// Byte offset into the node's plain text (see [`SearchIndex::text`]).
+    /// Which field of that node.
+    pub field: MatchField,
+    /// Byte offset into the field's text (see [`SearchIndex::text`]).
     pub start: usize,
     /// Exclusive byte end offset.
     pub end: usize,
@@ -20,7 +51,8 @@ pub struct Match {
 #[derive(Debug, Clone)]
 struct Entry {
     node: NodeId,
-    /// Plain text of the node.
+    field: MatchField,
+    /// Plain text of the field.
     text: String,
     /// Lower-cased text for case-insensitive search.
     lower: String,
@@ -29,48 +61,87 @@ struct Entry {
     map: Vec<usize>,
 }
 
-/// Flattened plain text per node.
+/// Flattened searchable text, one entry per (node, field).
 #[derive(Debug, Clone, Default)]
 pub struct SearchIndex {
     entries: Vec<Entry>,
 }
 
-impl SearchIndex {
-    /// Build the index from a document (pre-order, so results are in
-    /// document order).
-    pub fn build(doc: &Document) -> Self {
-        let entries = doc
-            .walk()
-            .map(|node| {
-                let text = node_text(node);
-                let mut lower = String::with_capacity(text.len());
-                let mut map = Vec::with_capacity(text.len());
-                for (idx, c) in text.char_indices() {
-                    for lc in c.to_lowercase() {
-                        lower.push(lc);
-                        map.extend(std::iter::repeat(idx).take(lc.len_utf8()));
-                    }
-                }
-                Entry {
-                    node: node.id,
-                    text,
-                    lower,
-                    map,
-                }
-            })
-            .collect();
-        Self { entries }
+/// Accumulates the searchable fields of a document in document order.
+///
+/// A backend pushes what it renders; nothing else decides what is findable,
+/// which is why "is the comment searchable" is answered by the YAML backend
+/// calling `push` rather than by a flag somewhere else.
+#[derive(Debug, Default)]
+pub struct SearchIndexBuilder {
+    entries: Vec<Entry>,
+}
+
+impl SearchIndexBuilder {
+    /// An empty builder.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Plain text of a node as indexed (for highlighting / context).
-    pub fn text(&self, node: NodeId) -> Option<&str> {
+    /// Reserve room for `n` fields.
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(n),
+        }
+    }
+
+    /// Add one searchable field. Empty text is skipped — it can never match.
+    pub fn push(&mut self, node: NodeId, field: MatchField, text: impl Into<String>) {
+        let text = text.into();
+        if text.is_empty() {
+            return;
+        }
+        let mut lower = String::with_capacity(text.len());
+        let mut map = Vec::with_capacity(text.len());
+        for (idx, c) in text.char_indices() {
+            for lc in c.to_lowercase() {
+                lower.push(lc);
+                map.extend(std::iter::repeat(idx).take(lc.len_utf8()));
+            }
+        }
+        self.entries.push(Entry {
+            node,
+            field,
+            text,
+            lower,
+            map,
+        });
+    }
+
+    /// The finished index.
+    pub fn build(self) -> SearchIndex {
+        SearchIndex {
+            entries: self.entries,
+        }
+    }
+}
+
+impl SearchIndex {
+    /// Plain text of a node's field as indexed (for highlighting / context).
+    pub fn text(&self, node: NodeId, field: MatchField) -> Option<&str> {
         self.entries
             .iter()
-            .find(|e| e.node == node)
+            .find(|e| e.node == node && e.field == field)
             .map(|e| e.text.as_str())
     }
 
-    /// Find all occurrences of `query`. An empty query yields no matches.
+    /// Number of indexed fields.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether anything is indexed.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Find all occurrences of `query`, in document order. An empty query
+    /// yields no matches.
     pub fn find(&self, query: &str, case_sensitive: bool) -> Vec<Match> {
         if query.is_empty() {
             return Vec::new();
@@ -81,6 +152,7 @@ impl SearchIndex {
                 for (start, _) in e.text.match_indices(query) {
                     out.push(Match {
                         node: e.node,
+                        field: e.field,
                         start,
                         end: start + query.len(),
                     });
@@ -99,6 +171,7 @@ impl SearchIndex {
                     if end > start {
                         out.push(Match {
                             node: e.node,
+                            field: e.field,
                             start,
                             end,
                         });
@@ -110,135 +183,74 @@ impl SearchIndex {
     }
 }
 
-/// Plain text of a single node (its own content, not nested block children —
-/// those are separate nodes with their own entries).
-pub fn node_text(node: &Node) -> String {
-    match &node.kind {
-        NodeKind::Heading(h) => h.text.clone(),
-        NodeKind::Paragraph(inlines) => inlines_to_text(inlines),
-        NodeKind::Table(t) => {
-            let mut out = String::new();
-            for cell in &t.header {
-                push_cell(&mut out, &inlines_to_text(cell));
-            }
-            for row in &t.rows {
-                out.push('\n');
-                for cell in row {
-                    push_cell(&mut out, &inlines_to_text(cell));
-                }
-            }
-            out
-        }
-        NodeKind::CodeBlock(c) => c.code.clone(),
-        NodeKind::Mermaid(m) => m.source.clone(),
-        NodeKind::Image(i) => i.alt.clone(),
-        NodeKind::Html(h) => h.clone(),
-        NodeKind::FootnoteDefinition(f) => f.label.clone(),
-        NodeKind::List(_) | NodeKind::Quote(_) | NodeKind::HorizontalRule => String::new(),
-    }
-}
-
-fn push_cell(out: &mut String, cell: &str) {
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push(' ');
-    }
-    out.push_str(cell);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::parse;
 
-    /// Case-insensitive by default, and reported in reading order.
-    ///
-    /// The offsets are checked by slicing the indexed text with them — that
-    /// is what every consumer does — rather than by hard-coding byte
-    /// positions, which would break the moment the search text of a node is
-    /// assembled differently.
+    fn index(fields: &[(NodeId, MatchField, &str)]) -> SearchIndex {
+        let mut b = SearchIndexBuilder::new();
+        for (node, field, text) in fields {
+            b.push(*node, *field, *text);
+        }
+        b.build()
+    }
+
     #[test]
-    fn case_insensitive_default_in_document_order() {
-        let doc = parse("# Hello\n\nhello world, HELLO again\n\n- list hello\n");
-        let idx = SearchIndex::build(&doc);
-        let m = idx.find("hello", false);
-
-        let hits: Vec<&str> = m
-            .iter()
-            .map(|hit| {
-                let text = idx.text(hit.node).expect("indexed node");
-                &text[hit.start..hit.end]
-            })
-            .collect();
+    fn matches_come_back_in_the_order_the_fields_were_added() {
+        let idx = index(&[
+            (0, MatchField::Label, "image"),
+            (0, MatchField::Value, "nginx:image"),
+            (1, MatchField::Label, "image"),
+        ]);
+        let hits = idx.find("image", false);
         assert_eq!(
-            hits,
-            ["Hello", "hello", "HELLO", "hello"],
-            "every hit, in reading order, with its original casing"
+            hits.iter()
+                .map(|m| (m.node, m.field))
+                .collect::<Vec<_>>(),
+            [
+                (0, MatchField::Label),
+                (0, MatchField::Value),
+                (1, MatchField::Label)
+            ]
         );
-
-        // Reading order: nodes never go backwards, and within a node the
-        // offsets increase and do not overlap.
-        assert!(m.windows(2).all(|w| w[0].node <= w[1].node));
-        assert!(m
-            .windows(2)
-            .all(|w| w[0].node < w[1].node || w[0].end <= w[1].start));
-
-        // The two hits in the same paragraph share a node; the heading and
-        // the list item are separate nodes.
-        assert_eq!(m[1].node, m[2].node, "both paragraph hits are one node");
-        assert_ne!(m[0].node, m[1].node, "the heading is its own node");
-        assert_ne!(m[2].node, m[3].node, "the list item is its own node");
+        // Offsets index the field, not the node.
+        let value = idx.text(0, MatchField::Value).unwrap();
+        assert_eq!(&value[hits[1].start..hits[1].end], "image");
     }
 
     #[test]
-    fn case_sensitive() {
-        let doc = parse("Hello hello\n");
-        let idx = SearchIndex::build(&doc);
-        assert_eq!(idx.find("Hello", true).len(), 1);
+    fn case_insensitive_by_default_and_case_sensitive_on_request() {
+        let idx = index(&[(0, MatchField::Body, "Hello hello HELLO")]);
+        assert_eq!(idx.find("hello", false).len(), 3);
         assert_eq!(idx.find("hello", true).len(), 1);
-        assert_eq!(idx.find("HELLO", true).len(), 0);
-        assert_eq!(idx.find("HELLO", false).len(), 2);
-    }
-
-    #[test]
-    fn searches_table_cells_code_and_mermaid() {
-        let doc = parse("| h1 | h2 |\n|---|---|\n| needle | x |\n\n```\nlet needle = 1;\n```\n\n```mermaid\ngraph LR\nNeedle --> B\n```\n");
-        let idx = SearchIndex::build(&doc);
-        let m = idx.find("needle", false);
-        assert_eq!(m.iter().map(|m| m.node).collect::<Vec<_>>(), [0, 1, 2]);
-        let text = idx.text(0).unwrap();
-        assert_eq!(&text[m[0].start..m[0].end], "needle");
-    }
-
-    #[test]
-    fn empty_query_and_no_match() {
-        let doc = parse("text\n");
-        let idx = SearchIndex::build(&doc);
+        assert_eq!(idx.find("Hello", true).len(), 1);
         assert!(idx.find("", false).is_empty());
         assert!(idx.find("zzz", false).is_empty());
     }
 
     #[test]
-    fn unicode_case_folding_keeps_offsets_valid() {
-        let doc = parse("Straße ÜBER straße\n");
-        let idx = SearchIndex::build(&doc);
-        let text = idx.text(0).unwrap();
-        let m = idx.find("über", false);
-        assert_eq!(m.len(), 1);
-        assert_eq!(&text[m[0].start..m[0].end], "ÜBER");
+    fn unicode_case_folding_keeps_offsets_on_character_boundaries() {
+        let idx = index(&[
+            (0, MatchField::Body, "Straße ÜBER straße"),
+            (1, MatchField::Body, "İstanbul"),
+        ]);
+        let text = idx.text(0, MatchField::Body).unwrap();
+        let hits = idx.find("über", false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&text[hits[0].start..hits[0].end], "ÜBER");
         assert_eq!(idx.find("straße", false).len(), 2);
-        // Slicing must never panic even for chars whose lowercase is longer.
-        let doc = parse("İstanbul\n");
-        let idx = SearchIndex::build(&doc);
-        for m in idx.find("i̇stanbul", false) {
-            let t = idx.text(m.node).unwrap();
+        for m in idx.find("i\u{307}stanbul", false) {
+            let t = idx.text(m.node, m.field).unwrap();
             assert!(t.is_char_boundary(m.start) && t.is_char_boundary(m.end));
         }
     }
 
     #[test]
-    fn matches_inside_emphasis_and_links() {
-        let doc = parse("a **bold needle** and [link needle](http://x)\n");
-        let idx = SearchIndex::build(&doc);
-        assert_eq!(idx.find("needle", false).len(), 2);
+    fn an_empty_field_is_not_indexed() {
+        let idx = index(&[(0, MatchField::Value, ""), (1, MatchField::Value, "x")]);
+        assert_eq!(idx.len(), 1);
+        assert!(idx.text(0, MatchField::Value).is_none());
+        assert!(!idx.is_empty());
+        assert!(SearchIndexBuilder::with_capacity(4).build().is_empty());
     }
 }

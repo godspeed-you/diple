@@ -23,8 +23,9 @@
 //! must never panic.
 
 use crate::config::schema::TableMode;
-use crate::document::ast::inlines_to_text;
-use crate::document::{Alignment, Inlines, Match, Table};
+use crate::document::markdown::ast::inlines_to_text;
+use crate::document::markdown::{Alignment, Inlines, Table};
+use crate::document::Match;
 use crate::layout::inline::{layout_inlines, push_span, spans_unwrapped};
 use crate::render::primitives::StyledSpan;
 use crate::render::theme::{Style, Theme};
@@ -140,7 +141,7 @@ fn is_code_cell(cell: &Inlines) -> bool {
     !cell.is_empty()
         && cell
             .iter()
-            .all(|i| matches!(i, crate::document::Inline::Code(_)))
+            .all(|i| matches!(i, crate::document::markdown::Inline::Code(_)))
 }
 
 /// Measure every column of the table (steps 2, 3 and 6 of the algorithm).
@@ -542,7 +543,7 @@ pub fn layout_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, NodeKind};
+    use crate::document::markdown::{parse, NodeKind};
 
     fn table_of(src: &str) -> Table {
         let doc = parse(src);

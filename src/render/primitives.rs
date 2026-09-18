@@ -30,9 +30,21 @@ pub struct StyledSpan {
 
 impl StyledSpan {
     /// A plain run with a style.
+    /// A span of text in a style.
+    ///
+    /// Every piece of document-controlled text reaches the terminal through
+    /// here, so this is where it is made safe: an ESC, a BEL, a carriage
+    /// return or a bidirectional override inside a JSON string, a YAML
+    /// comment or a Markdown paragraph is replaced before it can become
+    /// something the terminal obeys (see [`crate::util::text`]). Ordinary
+    /// text is borrowed through unchanged.
     pub fn new(text: impl Into<String>, style: Style) -> Self {
+        let text = text.into();
         Self {
-            text: text.into(),
+            text: match crate::util::text::sanitized(&text) {
+                std::borrow::Cow::Borrowed(_) => text,
+                std::borrow::Cow::Owned(clean) => clean,
+            },
             style,
             link: None,
             search_match: false,
@@ -84,6 +96,11 @@ pub enum LineKind {
     /// A heading line of the given level (1..=6); the underline of a heading
     /// is also reported as `Heading`.
     Heading(u8),
+    /// The row of a structured container, at the given nesting depth.
+    ///
+    /// The structural counterpart of [`LineKind::Heading`] for JSON and YAML:
+    /// what the outline nests, what folds, and what `[`/`]` move between.
+    Structural(u8),
     /// A line inside a code block.
     Code,
     /// A table border, header or body line.

@@ -21,6 +21,8 @@ use super::ast::{
     List, ListItem, MermaidBlock, Node, NodeId, NodeKind, SourceSpan, Table,
 };
 use super::links::Link;
+use crate::document::search::SearchIndex;
+use crate::document::source::SourceDocument;
 use super::sections;
 
 /// Parser options used by diple.
@@ -34,12 +36,23 @@ pub fn options() -> Options {
 
 /// Parse Markdown source into a fully derived [`Document`].
 pub fn parse(source: &str) -> Document {
+    parse_source(SourceDocument::new("<document>", source))
+}
+
+/// Parse a named source, keeping it on the document.
+///
+/// The source outlives the parse for the same reasons it does in the
+/// structured backends: error excerpts, source spans and a future source
+/// view all need the bytes the document was made of.
+pub fn parse_source(source: SourceDocument) -> Document {
     let mut builder = Builder::new();
-    for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(source.text(), options()).into_offset_iter() {
         builder.event(event, range);
     }
     let mut doc = builder.finish();
     sections::build(&mut doc);
+    doc.search = super::search::build(&doc);
+    doc.source = source;
     doc
 }
 
@@ -817,6 +830,7 @@ impl Builder {
             _ => Vec::new(),
         };
         Document {
+            source: SourceDocument::default(),
             nodes,
             sections: Vec::new(),
             anchors: self.anchors,
@@ -825,6 +839,7 @@ impl Builder {
             links: self.links,
             top_level: self.top_level,
             node_section: Vec::new(),
+            search: SearchIndex::default(),
         }
     }
 

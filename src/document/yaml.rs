@@ -1,0 +1,1066 @@
+//! The YAML backend.
+//!
+//! # What a YAML reader has to keep
+//!
+//! YAML carries more of the author's intent than its data model does, and a
+//! reader that throws that away is lying about the file it is showing:
+//!
+//! * **comments** are the document's prose and must stay visible and
+//!   searchable, even though they are not YAML data;
+//! * **anchors and aliases** are references. An alias is shown as a reference,
+//!   never expanded into a copy of the anchored subtree — that would be both
+//!   untrue to the source and, for a document designed to be hostile, an
+//!   exponential amount of work;
+//! * **merge keys** (`<<: *defaults`) stay as the entry the author wrote.
+//!   diple reads a document; it does not resolve a configuration;
+//! * **tags** (`!!timestamp`, `!MyType`) stay visible, and searchable;
+//! * **directives** (`%YAML`, `%TAG`) stay visible above their document;
+//! * **scalar style** is kept, so a `|` block still reads as a block and a
+//!   quoted string is still distinguishable from a plain one;
+//! * **entry order** is source order, and **every document** of a stream is a
+//!   root of its own.
+//!
+//! # The parser
+//!
+//! [`granit_parser`] is a pure-Rust YAML 1.2 event parser with comments,
+//! scalar styles, tags and byte spans — everything above. Events are consumed
+//! iteratively into [`super::structured::Builder`], so nesting costs heap
+//! rather than call frames.
+//!
+//! Two passes are needed over the source, for one reason: the event stream
+//! identifies an anchor by a numeric id rather than by its name, and a reader
+//! has to see `&defaults`. A token pass collects the anchor names in source
+//! order — the parser assigns ids in exactly that order — along with the
+//! `%TAG` and `%YAML` directives, which are likewise only visible at the token
+//! level.
+
+use granit_parser::{Event, Marker, Parser, ScalarStyle as YamlStyle, Scanner, StrInput, TokenType};
+
+use super::error::DocumentError;
+use super::format::DocumentKind;
+use super::source::{SourceDocument, SourceSpan};
+use super::structured::ast::{
+    Directive, NodeMeta, NodeRelation, ScalarKind, ScalarStyle, ScalarValue, StructuredDocument,
+    StructuredKey, StructuredNodeKind, MAX_DEPTH,
+};
+use super::structured::Builder;
+use super::NodeId;
+
+/// Parse a YAML stream into the structured model.
+pub fn parse(source: &SourceDocument) -> Result<StructuredDocument, DocumentError> {
+    let prelude = Prelude::scan(source.text())?;
+    Loader::new(source, prelude).run()
+}
+
+// ---------------------------------------------------------------------------
+// Pass 1: the token-level facts the event stream does not carry.
+// ---------------------------------------------------------------------------
+
+/// Anchor names and directives, in source order.
+#[derive(Debug, Default)]
+struct Prelude {
+    /// The *n*-th anchor definition in the source; the parser numbers anchors
+    /// from 1 in the same order, so anchor id `n` is `anchors[n - 1]`.
+    anchors: Vec<String>,
+    /// Directives with the byte offset they were written at.
+    directives: Vec<(usize, Directive)>,
+}
+
+impl Prelude {
+    fn scan(text: &str) -> Result<Prelude, DocumentError> {
+        let mut prelude = Prelude::default();
+        for token in Scanner::new(StrInput::new(text)) {
+            // A scan error here is reported by the event pass, with the
+            // position and message the reader should see; this pass only
+            // gathers what it can.
+            let Ok(token) = token else { break };
+            let (span, kind) = token.into_parts();
+            let at = span.start.byte_offset().unwrap_or(0);
+            match kind {
+                TokenType::Anchor(name) => prelude.anchors.push(name.into_owned()),
+                TokenType::VersionDirective(major, minor) => {
+                    prelude
+                        .directives
+                        .push((at, Directive::Version { major, minor }));
+                }
+                TokenType::TagDirective(handle, prefix) => {
+                    prelude.directives.push((
+                        at,
+                        Directive::Tag {
+                            handle: handle.into_owned(),
+                            prefix: prefix.into_owned(),
+                        },
+                    ));
+                }
+                TokenType::StreamEnd => break,
+                _ => {}
+            }
+        }
+        Ok(prelude)
+    }
+
+    /// The name of the anchor the parser gave `id`.
+    fn anchor(&self, id: usize) -> Option<&str> {
+        id.checked_sub(1)
+            .and_then(|i| self.anchors.get(i))
+            .map(String::as_str)
+    }
+
+    /// Every directive written before `byte`, removed from the pool so that
+    /// each is claimed by exactly one document.
+    fn take_before(&mut self, byte: usize) -> Vec<Directive> {
+        let keep = self.directives.split_off(
+            self.directives
+                .iter()
+                .position(|(at, _)| *at >= byte)
+                .unwrap_or(self.directives.len()),
+        );
+        let taken = std::mem::replace(&mut self.directives, keep);
+        taken.into_iter().map(|(_, d)| d).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2: events into the structured model.
+// ---------------------------------------------------------------------------
+
+/// Where the loader is inside a mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    Key,
+    Value,
+}
+
+/// One open container.
+#[derive(Debug)]
+struct Frame {
+    node: NodeId,
+    mapping: bool,
+    next_index: usize,
+    expect: Expect,
+    pending_key: Option<StructuredKey>,
+}
+
+struct Loader<'a> {
+    source: &'a SourceDocument,
+    text: &'a str,
+    prelude: Prelude,
+    builder: Builder,
+    frames: Vec<Frame>,
+    /// Comments written above the node that is about to be created.
+    pending_above: Vec<usize>,
+    /// A same-line comment that belongs to the entry currently being read —
+    /// `metadata: # note` arrives before the mapping the note describes.
+    pending_right: Option<usize>,
+    /// The node a trailing same-line comment attaches to.
+    last_node: Option<NodeId>,
+    /// While a collection is being used as a mapping key, how deep we are
+    /// inside it and where it started.
+    complex_key: Option<(usize, usize)>,
+}
+
+impl<'a> Loader<'a> {
+    fn new(source: &'a SourceDocument, prelude: Prelude) -> Self {
+        let text = source.text();
+        let mut builder = Builder::new(DocumentKind::Yaml);
+        builder.reserve(text.len() / 24);
+        Self {
+            source,
+            text,
+            prelude,
+            builder,
+            frames: Vec::new(),
+            pending_above: Vec::new(),
+            pending_right: None,
+            last_node: None,
+            complex_key: None,
+        }
+    }
+
+    fn run(mut self) -> Result<StructuredDocument, DocumentError> {
+        for next in Parser::new_from_str(self.text) {
+            let (event, span) = match next {
+                Ok(pair) => pair,
+                Err(error) => return Err(self.scan_error(&error)),
+            };
+            let start = span.start.byte_offset().unwrap_or(0);
+            let end = span.end.byte_offset().unwrap_or(start);
+            let range = SourceSpan::new(start, end);
+
+            // A collection used as a mapping key is consumed as source text:
+            // there is no honest way to show `[1, 2]: x` other than as it was
+            // written, and a key subtree would be a set of cursor stops that
+            // are not entries of anything.
+            if let Some((depth, key_start)) = self.complex_key {
+                match event {
+                    Event::MappingStart(..) | Event::SequenceStart(..) => {
+                        self.complex_key = Some((depth + 1, key_start));
+                    }
+                    Event::MappingEnd | Event::SequenceEnd => {
+                        if depth == 1 {
+                            self.complex_key = None;
+                            self.finish_complex_key(key_start, end);
+                        } else {
+                            self.complex_key = Some((depth - 1, key_start));
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            match event {
+                Event::StreamStart => {}
+                Event::StreamEnd => break,
+                Event::DocumentStart(explicit, _) => {
+                    let directives = self.prelude.take_before(end.max(start));
+                    self.builder.begin_document(explicit, directives);
+                }
+                Event::DocumentEnd => {
+                    self.flush_free_comments();
+                }
+                Event::Comment(text, placement) => {
+                    self.comment(text.as_ref(), range, placement);
+                }
+                Event::Scalar(value, style, anchor, tag) => {
+                    let scalar = self.scalar_value(&value, style, tag.as_deref(), range);
+                    if self.expecting_key() {
+                        self.set_scalar_key(scalar, anchor, range);
+                    } else {
+                        let relation = self.take_relation();
+                        let meta = self.take_meta(anchor, tag.as_deref());
+                        let id = self.builder.scalar(relation, scalar, range, meta);
+                        self.node_created(id);
+                        self.value_completed();
+                    }
+                }
+                Event::Alias(anchor_id) => {
+                    let name = self
+                        .prelude
+                        .anchor(anchor_id)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| alias_name_from_source(self.text, range));
+                    if self.expecting_key() {
+                        self.set_key(StructuredKey {
+                            text: format!("*{name}"),
+                            span: range,
+                            complex: false,
+                        });
+                    } else {
+                        let relation = self.take_relation();
+                        let meta = self.take_meta(0, None);
+                        let id = self.builder.alias(relation, name, range, meta);
+                        self.node_created(id);
+                        self.value_completed();
+                    }
+                }
+                Event::MappingStart(_, anchor, tag) => {
+                    if self.expecting_key() {
+                        self.complex_key = Some((1, start));
+                        continue;
+                    }
+                    let relation = self.take_relation();
+                    let meta = self.take_meta(anchor, tag.as_deref());
+                    let id = self
+                        .builder
+                        .open_mapping(relation, range, meta)
+                        .map_err(|_| self.depth_error(&span.start))?;
+                    self.node_created(id);
+                    self.frames.push(Frame {
+                        node: id,
+                        mapping: true,
+                        next_index: 0,
+                        expect: Expect::Key,
+                        pending_key: None,
+                    });
+                }
+                Event::SequenceStart(_, anchor, tag) => {
+                    if self.expecting_key() {
+                        self.complex_key = Some((1, start));
+                        continue;
+                    }
+                    let relation = self.take_relation();
+                    let meta = self.take_meta(anchor, tag.as_deref());
+                    let id = self
+                        .builder
+                        .open_sequence(relation, range, meta)
+                        .map_err(|_| self.depth_error(&span.start))?;
+                    self.node_created(id);
+                    self.frames.push(Frame {
+                        node: id,
+                        mapping: false,
+                        next_index: 0,
+                        expect: Expect::Value,
+                        pending_key: None,
+                    });
+                }
+                Event::MappingEnd | Event::SequenceEnd => {
+                    if let Some(frame) = self.frames.pop() {
+                        self.builder.set_span_end(frame.node, end);
+                        self.builder.close();
+                        self.last_node = Some(frame.node);
+                    }
+                    self.value_completed();
+                }
+                // `Event` is `#[non_exhaustive]`: an event granit adds later
+                // is presentation diple does not yet show, never structure it
+                // must not lose, so ignoring it is the right default.
+                _ => {}
+            }
+        }
+        self.flush_free_comments();
+        Ok(self.builder.finish(self.source.clone()))
+    }
+
+    // ---- relations -------------------------------------------------------
+
+    fn expecting_key(&self) -> bool {
+        self.frames
+            .last()
+            .is_some_and(|f| f.mapping && f.expect == Expect::Key)
+    }
+
+    /// The relation the value now being read will carry.
+    fn take_relation(&mut self) -> NodeRelation {
+        match self.frames.last_mut() {
+            None => NodeRelation::Root { document: 0 },
+            Some(frame) if frame.mapping => {
+                let key = frame.pending_key.take().unwrap_or_else(|| StructuredKey {
+                    text: String::new(),
+                    span: SourceSpan::default(),
+                    complex: false,
+                });
+                NodeRelation::MappingEntry { key }
+            }
+            Some(frame) => {
+                let index = frame.next_index;
+                frame.next_index += 1;
+                NodeRelation::SequenceItem { index }
+            }
+        }
+    }
+
+    /// A value finished: a mapping goes back to expecting a key.
+    fn value_completed(&mut self) {
+        if let Some(frame) = self.frames.last_mut() {
+            if frame.mapping {
+                frame.expect = Expect::Key;
+            }
+        }
+    }
+
+    fn set_key(&mut self, key: StructuredKey) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.pending_key = Some(key);
+            frame.expect = Expect::Value;
+        }
+    }
+
+    /// A scalar used as a key. An anchor or tag on the key itself is shown as
+    /// part of the key text rather than dropped.
+    fn set_scalar_key(&mut self, scalar: ScalarValue, anchor: usize, span: SourceSpan) {
+        let mut text = scalar.text;
+        if let Some(name) = self.prelude.anchor(anchor) {
+            text = format!("&{name} {text}");
+        }
+        self.set_key(StructuredKey {
+            text,
+            span,
+            complex: false,
+        });
+    }
+
+    /// A collection used as a key: shown as the source wrote it.
+    fn finish_complex_key(&mut self, start: usize, end: usize) {
+        let text = self
+            .text
+            .get(start..end)
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        self.set_key(StructuredKey {
+            text,
+            span: SourceSpan::new(start, end),
+            complex: true,
+        });
+    }
+
+    // ---- metadata --------------------------------------------------------
+
+    fn node_created(&mut self, id: NodeId) {
+        self.last_node = Some(id);
+    }
+
+    /// Collect the metadata the node about to be created carries.
+    fn take_meta(&mut self, anchor: usize, tag: Option<&granit_parser::Tag>) -> Option<NodeMeta> {
+        let merge_key = self
+            .frames
+            .last()
+            .and_then(|f| f.pending_key.as_ref())
+            .is_some_and(|k| k.text == "<<");
+        let meta = NodeMeta {
+            anchor: self.prelude.anchor(anchor).map(str::to_string),
+            tag: tag.map(tag_text),
+            above: std::mem::take(&mut self.pending_above),
+            right: self.pending_right.take(),
+            merge_key,
+        };
+        (!meta.is_empty()).then_some(meta)
+    }
+
+    fn comment(&mut self, text: &str, span: SourceSpan, placement: granit_parser::Placement) {
+        use granit_parser::Placement;
+        let id = self.builder.comment(text, span);
+        match placement {
+            // A same-line comment belongs to the entry whose key has just been
+            // read when there is one — `metadata: # note` — and otherwise to
+            // the node that was just built.
+            Placement::Right => {
+                if self
+                    .frames
+                    .last()
+                    .is_some_and(|f| f.mapping && f.expect == Expect::Value)
+                {
+                    self.pending_right = Some(id);
+                } else if let Some(node) = self.last_node {
+                    self.builder.attach_meta(node, |m| m.right = Some(id));
+                } else {
+                    self.pending_above.push(id);
+                }
+            }
+            Placement::Last => self.builder.trailing_comment(id),
+            // An own-line comment describes what follows it, so it waits for
+            // the next node and then collapses and moves with it. That is
+            // also the safe default for a placement granit adds later.
+            Placement::Above | Placement::Free | _ => self.pending_above.push(id),
+        }
+    }
+
+    /// Comments that never found a node to describe stay in the document as
+    /// trailing text rather than disappearing.
+    fn flush_free_comments(&mut self) {
+        for id in std::mem::take(&mut self.pending_above) {
+            self.builder.trailing_comment(id);
+        }
+        if let Some(id) = self.pending_right.take() {
+            self.builder.trailing_comment(id);
+        }
+    }
+
+    // ---- scalars ---------------------------------------------------------
+
+    fn scalar_value(
+        &self,
+        value: &str,
+        style: YamlStyle,
+        tag: Option<&granit_parser::Tag>,
+        span: SourceSpan,
+    ) -> ScalarValue {
+        let style = match style {
+            YamlStyle::Plain => ScalarStyle::Plain,
+            YamlStyle::SingleQuoted => ScalarStyle::SingleQuoted,
+            YamlStyle::DoubleQuoted => ScalarStyle::DoubleQuoted,
+            YamlStyle::Literal => ScalarStyle::Literal,
+            YamlStyle::Folded => ScalarStyle::Folded,
+        };
+        // An empty span means the value was not written at all — `key:` with
+        // nothing after it. The parser reports that as `~`; the reader should
+        // see what the author wrote, which is nothing.
+        if style == ScalarStyle::Plain && span.is_empty() {
+            return ScalarValue {
+                text: "null".to_string(),
+                kind: ScalarKind::Null,
+                style,
+                source: Some(String::new()),
+            };
+        }
+        let kind = tag
+            .and_then(|t| core_schema_kind(t))
+            .unwrap_or_else(|| resolve_kind(value, style));
+        ScalarValue {
+            text: value.to_string(),
+            kind,
+            style,
+            source: None,
+        }
+    }
+
+    // ---- errors ----------------------------------------------------------
+
+    fn scan_error(&self, error: &granit_parser::ScanError) -> DocumentError {
+        let marker = error.marker();
+        DocumentError::at_line_col(
+            self.source,
+            DocumentKind::Yaml,
+            marker.line(),
+            marker.col() + 1,
+            error.info(),
+        )
+    }
+
+    fn depth_error(&self, marker: &Marker) -> DocumentError {
+        DocumentError::at_line_col(
+            self.source,
+            DocumentKind::Yaml,
+            marker.line(),
+            marker.col() + 1,
+            format!("nested more than {MAX_DEPTH} levels deep; diple refuses to go further"),
+        )
+    }
+}
+
+/// A tag as the source wrote it: the handle it was written with plus its
+/// suffix, so `!!timestamp` and `!MyType` read back the way they were typed.
+fn tag_text(tag: &granit_parser::Tag) -> String {
+    format!("{}{}", tag.original_handle(), tag.suffix())
+}
+
+/// The type a YAML core-schema tag forces, if it is one.
+fn core_schema_kind(tag: &granit_parser::Tag) -> Option<ScalarKind> {
+    match tag.core_suffix()? {
+        "str" => Some(ScalarKind::String),
+        "int" | "float" => Some(ScalarKind::Number),
+        "bool" => Some(ScalarKind::Boolean),
+        "null" => Some(ScalarKind::Null),
+        _ => None,
+    }
+}
+
+/// YAML 1.2 core-schema resolution for a plain scalar. Anything quoted or
+/// written as a block is a string whatever it looks like.
+fn resolve_kind(value: &str, style: ScalarStyle) -> ScalarKind {
+    if style != ScalarStyle::Plain {
+        return ScalarKind::String;
+    }
+    match value {
+        "" | "~" | "null" | "Null" | "NULL" => return ScalarKind::Null,
+        "true" | "True" | "TRUE" | "false" | "False" | "FALSE" => return ScalarKind::Boolean,
+        _ => {}
+    }
+    if is_yaml_number(value) {
+        ScalarKind::Number
+    } else {
+        ScalarKind::String
+    }
+}
+
+fn is_yaml_number(value: &str) -> bool {
+    let body = value
+        .strip_prefix(['-', '+'])
+        .unwrap_or(value);
+    if body.is_empty() {
+        return false;
+    }
+    if matches!(body, ".inf" | ".Inf" | ".INF") {
+        return true;
+    }
+    if matches!(value, ".nan" | ".NaN" | ".NAN") {
+        return true;
+    }
+    if let Some(hex) = body.strip_prefix("0x") {
+        return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    if let Some(oct) = body.strip_prefix("0o") {
+        return !oct.is_empty() && oct.bytes().all(|b| (b'0'..=b'7').contains(&b));
+    }
+    // [0-9]* ( '.' [0-9]* )? ( [eE] [-+]? [0-9]+ )?
+    let (mantissa, exponent) = match body.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (body, None),
+    };
+    let (int, frac) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (mantissa, None),
+    };
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(int) || !frac.is_none_or(digits) {
+        return false;
+    }
+    if int.is_empty() && frac.is_none_or(str::is_empty) {
+        return false;
+    }
+    match exponent {
+        None => true,
+        Some(e) => {
+            let e = e.strip_prefix(['-', '+']).unwrap_or(e);
+            !e.is_empty() && digits(e)
+        }
+    }
+}
+
+/// The alias name read straight out of the source, for the case where the
+/// anchor table could not supply it.
+fn alias_name_from_source(text: &str, span: SourceSpan) -> String {
+    span.slice(text)
+        .map(|s| s.trim_start_matches('*').to_string())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Content detection
+// ---------------------------------------------------------------------------
+
+/// Whether a parsed YAML document is confidently YAML rather than prose that
+/// happens to parse.
+///
+/// Almost any text is a valid YAML scalar, and a Markdown list is a valid YAML
+/// sequence, so parsing successfully proves nothing. Detection therefore asks
+/// for two things: the stream must be **coherent** — every document's root is
+/// a mapping or a sequence, never a bare scalar, which is what rules out prose
+/// and a Markdown file with YAML front matter — and it must show at least one
+/// **structural signal** that prose does not produce.
+///
+/// The cost of a false positive is that a reader's Markdown is shown as YAML;
+/// the cost of a false negative is typing `--format yaml`. The policy is tuned
+/// accordingly.
+pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
+    if doc.roots().is_empty() {
+        return false;
+    }
+    let coherent = doc.roots().iter().all(|root| {
+        doc.node(root.node)
+            .is_some_and(|n| n.is_container() && n.child_count > 0)
+    });
+    if !coherent {
+        return false;
+    }
+    // Several documents in one stream.
+    if doc.roots().len() > 1 {
+        return true;
+    }
+    // `%YAML` or `%TAG`.
+    if doc.roots().iter().any(|r| !r.directives.is_empty()) {
+        return true;
+    }
+    for node in doc.nodes() {
+        // An anchor, an alias or an explicit tag.
+        if node.anchor().is_some()
+            || node.tag().is_some()
+            || matches!(node.kind, StructuredNodeKind::Alias { .. })
+        {
+            return true;
+        }
+        // A container inside a container: a nested mapping, a mapping holding
+        // a sequence, or a sequence of mappings.
+        if node.is_container() && node.depth > 0 {
+            return true;
+        }
+    }
+    // A mapping with at least two entries at the top level.
+    doc.roots().iter().any(|root| {
+        doc.node(root.node).is_some_and(|n| {
+            matches!(n.kind, StructuredNodeKind::Mapping) && n.child_count >= 2
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::search::MatchField;
+
+    fn doc(src: &str) -> StructuredDocument {
+        parse(&SourceDocument::new("t.yaml", src)).expect(src)
+    }
+
+    fn err(src: &str) -> DocumentError {
+        parse(&SourceDocument::new("t.yaml", src)).expect_err(src)
+    }
+
+    fn shape(d: &StructuredDocument) -> Vec<String> {
+        d.nodes()
+            .iter()
+            .map(|n| {
+                let what = match &n.kind {
+                    StructuredNodeKind::Mapping => "{}".to_string(),
+                    StructuredNodeKind::Sequence => "[]".to_string(),
+                    StructuredNodeKind::Scalar(v) => format!("{:?} {:?}", v.kind, v.display()),
+                    StructuredNodeKind::Alias { name } => format!("*{name}"),
+                };
+                format!("{}{} {what}", "  ".repeat(n.depth), d.label(n.id))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mappings_and_sequences_build_the_expected_tree() {
+        let d = doc("metadata:\n  name: nginx\n  labels:\n    app: frontend\nports:\n  - 80\n  - 443\n");
+        assert_eq!(
+            shape(&d),
+            [
+                "root {}",
+                "  metadata {}",
+                "    name String \"nginx\"",
+                "    labels {}",
+                "      app String \"frontend\"",
+                "  ports []",
+                "    [0] Number \"80\"",
+                "    [1] Number \"443\"",
+            ]
+        );
+        assert_eq!(d.path(7).breadcrumb(false), "ports > [1]");
+        assert_eq!(d.collapsed_summary(1).as_deref(), Some("{2 entries}"));
+        assert_eq!(d.collapsed_summary(5).as_deref(), Some("[2 items]"));
+    }
+
+    #[test]
+    fn a_sequence_of_mappings_nests_the_way_it_reads() {
+        let d = doc("containers:\n  - name: nginx\n    image: nginx:1.27\n  - name: sidecar\n");
+        assert_eq!(
+            shape(&d),
+            [
+                "root {}",
+                "  containers []",
+                "    [0] {}",
+                "      name String \"nginx\"",
+                "      image String \"nginx:1.27\"",
+                "    [1] {}",
+                "      name String \"sidecar\"",
+            ]
+        );
+        assert_eq!(d.path(4).breadcrumb(false), "containers > [0] > image");
+    }
+
+    #[test]
+    fn entry_order_is_source_order() {
+        let d = doc("z: 1\na: 2\nm: 3\n");
+        let keys: Vec<String> = d.children(0).into_iter().map(|id| d.label(id)).collect();
+        assert_eq!(keys, ["z", "a", "m"]);
+    }
+
+    #[test]
+    fn scalar_types_follow_the_core_schema_and_the_style() {
+        let d = doc(
+            "a: 3\nb: 3.5\nc: -2\nd: 1e6\ne: true\nf: False\ng: null\nh: ~\ni: text\nj: \"3\"\nk: '3'\nl: 0x1f\nm: .inf\nn: 2026-08-31\n",
+        );
+        let kinds: Vec<(String, ScalarKind)> = d
+            .children(0)
+            .into_iter()
+            .filter_map(|id| Some((d.label(id), d.node(id)?.scalar()?.kind)))
+            .collect();
+        use ScalarKind::*;
+        assert_eq!(
+            kinds,
+            [
+                ("a".into(), Number),
+                ("b".into(), Number),
+                ("c".into(), Number),
+                ("d".into(), Number),
+                ("e".into(), Boolean),
+                ("f".into(), Boolean),
+                ("g".into(), Null),
+                ("h".into(), Null),
+                ("i".into(), String),
+                ("j".into(), String),
+                ("k".into(), String),
+                ("l".into(), Number),
+                ("m".into(), Number),
+                // A timestamp is a string under the core schema; the YAML 1.1
+                // types are not resolved implicitly.
+                ("n".into(), String),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_value_shows_as_the_author_wrote_it() {
+        let d = doc("empty:\nexplicit: null\ntilde: ~\n");
+        let shown: Vec<&str> = d
+            .children(0)
+            .into_iter()
+            .filter_map(|id| d.node(id)?.scalar().map(|v| v.display()))
+            .collect();
+        assert_eq!(shown, ["", "null", "~"]);
+        let kinds: Vec<ScalarKind> = d
+            .children(0)
+            .into_iter()
+            .filter_map(|id| d.node(id)?.scalar().map(|v| v.kind))
+            .collect();
+        assert_eq!(kinds, [ScalarKind::Null; 3]);
+    }
+
+    #[test]
+    fn block_scalars_keep_their_style_and_their_line_breaks() {
+        let d = doc("script: |\n  echo hello\n  echo world\nnote: >\n  one\n  two\n");
+        let script = d.node(1).unwrap().scalar().unwrap();
+        assert_eq!(script.style, ScalarStyle::Literal);
+        assert_eq!(script.text, "echo hello\necho world\n");
+        assert!(script.style.is_block());
+        let note = d.node(2).unwrap().scalar().unwrap();
+        assert_eq!(note.style, ScalarStyle::Folded);
+        assert_eq!(note.text, "one two\n");
+    }
+
+    #[test]
+    fn quoting_styles_survive() {
+        let d = doc("a: plain\nb: 'single'\nc: \"double\\ttab\"\n");
+        let styles: Vec<ScalarStyle> = d
+            .children(0)
+            .into_iter()
+            .filter_map(|id| d.node(id)?.scalar().map(|v| v.style))
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                ScalarStyle::Plain,
+                ScalarStyle::SingleQuoted,
+                ScalarStyle::DoubleQuoted
+            ]
+        );
+        assert_eq!(d.node(3).unwrap().scalar().unwrap().text, "double\ttab");
+    }
+
+    #[test]
+    fn comments_survive_attached_to_what_they_describe() {
+        let d = doc(
+            "# Production replicas.\n# Keep in sync with the capacity plan.\nreplicas: 3  # minimum for HA\nother: 1\n",
+        );
+        let replicas = d.node(1).unwrap();
+        assert_eq!(replicas.comments_above().len(), 2);
+        assert!(replicas.comment_right().is_some());
+        assert_eq!(
+            d.comment(replicas.comments_above()[0]).unwrap().text,
+            " Production replicas."
+        );
+        assert_eq!(
+            d.comment(replicas.comment_right().unwrap()).unwrap().text,
+            " minimum for HA"
+        );
+        assert!(d.node(2).unwrap().comments_above().is_empty());
+        // And they are searchable.
+        let hits = d.search_index().find("capacity", false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].field, MatchField::Comment);
+    }
+
+    #[test]
+    fn a_comment_after_a_key_belongs_to_that_entry() {
+        let d = doc("metadata: # the pod's identity\n  name: nginx\n");
+        let metadata = d.node(1).unwrap();
+        assert_eq!(d.label(1), "metadata");
+        assert_eq!(
+            d.comment(metadata.comment_right().unwrap()).unwrap().text,
+            " the pod's identity"
+        );
+    }
+
+    #[test]
+    fn a_comment_with_nothing_after_it_is_still_kept() {
+        let d = doc("a: 1\n# trailing thought\n");
+        assert_eq!(d.trailing_comments().len(), 1);
+        assert_eq!(d.search_index().find("trailing thought", false).len(), 1);
+    }
+
+    #[test]
+    fn anchors_are_visible_and_aliases_are_references_not_copies() {
+        let d = doc("defaults: &defaults\n  retries: 3\n  timeout: 5\nservice:\n  <<: *defaults\n  name: web\n");
+        assert_eq!(d.node(1).unwrap().anchor(), Some("defaults"));
+        let alias = d
+            .nodes()
+            .iter()
+            .find(|n| matches!(n.kind, StructuredNodeKind::Alias { .. }))
+            .expect("an alias node");
+        assert_eq!(
+            alias.kind,
+            StructuredNodeKind::Alias {
+                name: "defaults".to_string()
+            }
+        );
+        assert_eq!(alias.child_count, 0, "the anchored subtree is not copied");
+        assert!(alias.is_merge_key(), "`<<` is marked, never performed");
+        assert_eq!(d.label(alias.id), "<<");
+        // `retries` exists exactly once, under the anchor.
+        assert_eq!(d.search_index().find("retries", false).len(), 1);
+        // The alias is searchable by name.
+        let anchors = d.search_index().find("defaults", false);
+        assert!(anchors.iter().any(|m| m.field == MatchField::Anchor));
+    }
+
+    #[test]
+    fn an_alias_bomb_costs_what_the_source_costs() {
+        // The classic billion-laughs shape: without expansion this is a few
+        // dozen nodes, and with it would be 9^9.
+        let mut src = String::from("a: &a [x, x, x, x, x, x, x, x, x]\n");
+        for (n, prev) in [('b', 'a'), ('c', 'b'), ('d', 'c'), ('e', 'd')] {
+            src.push_str(&format!(
+                "{n}: &{n} [*{prev}, *{prev}, *{prev}, *{prev}, *{prev}, *{prev}, *{prev}, *{prev}, *{prev}]\n"
+            ));
+        }
+        let d = doc(&src);
+        assert!(d.node_count() < 100, "{} nodes", d.node_count());
+    }
+
+    #[test]
+    fn tags_are_kept_in_the_form_they_were_written() {
+        let d = doc("%TAG !e! tag:example.com,2000:\n---\na: !!timestamp 2026-08-31\nb: !MyType value\nc: !e!Custom x\nd: !!str 42\n");
+        let tags: Vec<Option<&str>> = d
+            .children(0)
+            .into_iter()
+            .filter_map(|id| d.node(id).map(|n| n.tag()))
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                Some("!!timestamp"),
+                Some("!MyType"),
+                Some("!e!Custom"),
+                Some("!!str")
+            ]
+        );
+        // An explicit `!!str` overrules the core-schema resolution.
+        assert_eq!(d.node(4).unwrap().scalar().unwrap().kind, ScalarKind::String);
+        assert_eq!(d.search_index().find("MyType", false).len(), 1);
+    }
+
+    #[test]
+    fn directives_are_kept_above_the_document_they_belong_to() {
+        let d = doc("%YAML 1.2\n%TAG !e! tag:example.com,2000:\n---\na: 1\n---\nb: 2\n");
+        assert_eq!(d.roots().len(), 2);
+        assert_eq!(
+            d.roots()[0].directives,
+            [
+                Directive::Version { major: 1, minor: 2 },
+                Directive::Tag {
+                    handle: "!e!".into(),
+                    prefix: "tag:example.com,2000:".into()
+                }
+            ]
+        );
+        assert!(d.roots()[1].directives.is_empty());
+        assert_eq!(d.roots()[0].directives[0].text(), "%YAML 1.2");
+        assert_eq!(
+            d.roots()[1].directives.len(),
+            0,
+            "a directive belongs to one document only"
+        );
+    }
+
+    #[test]
+    fn every_document_of_a_stream_is_a_root() {
+        let d = doc("---\nkind: ConfigMap\ndata:\n  a: 1\n---\nkind: Deployment\nspec:\n  replicas: 3\n");
+        assert_eq!(d.roots().len(), 2);
+        assert!(d.roots().iter().all(|r| r.explicit));
+        assert_eq!(d.label(d.roots()[0].node), "Document 1");
+        assert_eq!(d.label(d.roots()[1].node), "Document 2");
+        let deep = d.node_count() - 1;
+        assert_eq!(
+            d.path(deep).breadcrumb(false),
+            "Document 2 > spec > replicas"
+        );
+    }
+
+    #[test]
+    fn a_collection_used_as_a_key_is_shown_as_it_was_written() {
+        let d = doc("locations:\n  [47.3769, 8.5417]: local\n  [40.7128, -74.0060]: remote\n");
+        let keys: Vec<String> = d.children(1).into_iter().map(|id| d.label(id)).collect();
+        assert_eq!(keys, ["[47.3769, 8.5417]", "[40.7128, -74.0060]"]);
+        assert!(d
+            .node(2)
+            .unwrap()
+            .key()
+            .expect("a key")
+            .complex);
+        assert_eq!(d.node(2).unwrap().scalar().unwrap().text, "local");
+    }
+
+    #[test]
+    fn flow_collections_read_like_block_ones() {
+        let d = doc("a: {x: 1, y: 2}\nb: [1, 2]\n");
+        assert_eq!(
+            shape(&d),
+            [
+                "root {}",
+                "  a {}",
+                "    x Number \"1\"",
+                "    y Number \"2\"",
+                "  b []",
+                "    [0] Number \"1\"",
+                "    [1] Number \"2\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn unicode_survives_in_keys_values_and_comments() {
+        let d = doc("キー: 値 🎵  # コメント\nGrüße: \"straße\"\n");
+        assert_eq!(d.label(1), "キー");
+        assert_eq!(d.node(1).unwrap().scalar().unwrap().text, "値 🎵");
+        assert_eq!(d.node(2).unwrap().scalar().unwrap().text, "straße");
+        assert_eq!(d.search_index().find("コメント", false).len(), 1);
+    }
+
+    #[test]
+    fn an_empty_document_parses_to_nothing_useful_but_does_not_fail() {
+        let d = doc("");
+        assert_eq!(d.node_count(), 0);
+        assert!(d.is_empty());
+        assert_eq!(d.first_semantic(), None);
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_rather_than_a_crash() {
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 10), "]".repeat(MAX_DEPTH + 10));
+        let error = err(&deep);
+        assert!(error.message.contains("nested more than"), "{error}");
+    }
+
+    #[test]
+    fn malformed_input_says_where_and_what() {
+        for src in [
+            "a: 1\n b: 2\n  c: 3\n",
+            "[1, 2",
+            "a: *undefined\n",
+            "{a: 1\n",
+            "\"unterminated\n",
+        ] {
+            let error = err(src);
+            assert_eq!(error.format, DocumentKind::Yaml);
+            assert!(error.position.is_some(), "{src:?} reports a position");
+            assert!(!error.message.is_empty(), "{src:?}");
+            let report = error.report();
+            assert!(report.starts_with("YAML parse error\n"), "{report}");
+        }
+    }
+
+    // ---- detection -------------------------------------------------------
+
+    fn confident(src: &str) -> bool {
+        parse(&SourceDocument::new("<stdin>", src))
+            .map(|d| is_confidently_yaml(&d))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn structured_configuration_is_recognised() {
+        assert!(confident("metadata:\n  name: nginx\nspec:\n  replicas: 3\n"));
+        assert!(confident("apiVersion: apps/v1\nkind: Deployment\n"));
+        assert!(confident("a: &x 1\nb: *x\n"));
+        assert!(confident("---\na: 1\n---\nb: 2\n"));
+        assert!(confident("%YAML 1.2\n---\na: 1\n"));
+        assert!(confident("items:\n  - name: a\n"));
+        assert!(confident("a: !!str x\n"));
+    }
+
+    #[test]
+    fn prose_and_markdown_stay_markdown() {
+        // Every one of these parses as YAML; none of them is a document a
+        // reader piped in expecting a structure view.
+        for src in [
+            "hello\n",
+            "- one\n- two\n",
+            "title: hello\n",
+            "Some prose that happens to parse.\n",
+            "# A heading\n\nSome text.\n",
+            // Markdown with YAML front matter: the body is a scalar, so the
+            // stream is not coherent.
+            "---\ntitle: Post\ndate: 2026-08-31\n---\n\nSome **bold** prose.\n",
+        ] {
+            assert!(!confident(src), "{src:?} must stay Markdown");
+        }
+    }
+
+    #[test]
+    fn an_unparseable_document_is_never_confident() {
+        assert!(!confident("a: 1\n b: 2\n  c: 3\n"));
+        assert!(!confident(""));
+    }
+}

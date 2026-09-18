@@ -1,7 +1,8 @@
 //! Block primitives for prose: paragraphs, headings, horizontal rules,
 //! blockquote gutters, image placeholders and raw HTML.
 
-use crate::document::{Heading, Inlines, Match};
+use crate::document::markdown::{Heading, Inlines};
+use crate::document::Match;
 use crate::layout::inline::{layout_inlines, line_width, push_span};
 use crate::render::primitives::StyledSpan;
 use crate::render::theme::{Style, Theme};
@@ -191,7 +192,8 @@ pub(crate) fn quote_gutter(theme: &Theme, unicode_box: bool) -> StyledSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, FoldState, NodeKind};
+    use crate::document::markdown::{parse, NodeKind};
+    use crate::document::FoldState;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::primitives::{LineKind, RenderTree};
 

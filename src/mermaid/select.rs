@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use crate::config::schema::{ImageMode, MermaidBackend, MermaidConfig};
-use crate::document::ast::MermaidBlock;
+use crate::document::markdown::ast::MermaidBlock;
 
 use super::detect::diagram_kind;
 use super::image::ImageData;

@@ -15,7 +15,7 @@ use ratatui::text::{Line as RLine, Span as RSpan};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::config::actions::Action;
-use crate::document::{LinkId, Match, TocEntry};
+use crate::document::{LinkId, Match, OutlineEntry};
 use crate::render::primitives::RenderTree;
 use crate::render::theme::{Color, ColorLevel, Style, Theme};
 use crate::util::unicode;

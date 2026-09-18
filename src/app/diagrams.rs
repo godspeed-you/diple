@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::document::MermaidBlock;
+use crate::document::markdown::MermaidBlock;
 use crate::document::NodeId;
 use crate::layout::{DiagramContent, DiagramSource};
 use crate::mermaid::{MermaidOutput, MermaidRenderer, UNRENDERABLE_MARKER};

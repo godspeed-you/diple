@@ -6,9 +6,15 @@
 //! nearest shallower one.
 
 use super::ast::{Document, NodeId, NodeKind};
+use crate::document::folds::{FoldId, FoldState};
+use crate::document::outline::OutlineEntry;
 
 /// Index into [`Document::sections`].
-pub type SectionId = usize;
+///
+/// A section is also Markdown's foldable unit, so a `SectionId` is exactly a
+/// [`FoldId`]: the format-neutral fold state indexes this hierarchy directly
+/// rather than through a translation table.
+pub type SectionId = FoldId;
 
 /// A foldable section introduced by a top-level heading.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,20 +45,22 @@ impl Section {
     }
 }
 
-/// One line of the document outline: a section, how deeply it nests, and the
-/// text of its heading.
+/// Nesting depth of a section: how many ancestors it has.
 ///
-/// This is a *semantic* description of the document, not a rendering: the TOC
-/// sidebar widget consumes it, `app::toc` builds it, and neither owns
-/// it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TocEntry {
-    /// Section this entry refers to.
-    pub section: SectionId,
-    /// Nesting depth (0 = top level).
-    pub depth: usize,
-    /// Heading text.
-    pub text: String,
+/// Depth is not the heading level — `# A` followed by `### B` nests B one
+/// deep, not two — because the outline shows the hierarchy the document has
+/// rather than the levels it happens to have skipped.
+pub fn depth_of(doc: &Document, section: SectionId) -> usize {
+    let mut depth = 0usize;
+    let mut cur = doc.sections.get(section).and_then(|s| s.parent);
+    while let Some(parent) = cur {
+        depth += 1;
+        if depth > doc.sections.len() {
+            break;
+        }
+        cur = doc.sections.get(parent).and_then(|s| s.parent);
+    }
+    depth
 }
 
 /// Build `doc.sections` and `doc.node_section` from top-level headings.
@@ -115,104 +123,6 @@ pub fn build(doc: &mut Document) {
     doc.node_section = node_section;
 }
 
-/// Per-session fold state indexed by [`SectionId`].
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct FoldState {
-    collapsed: Vec<bool>,
-    parents: Vec<Option<SectionId>>,
-}
-
-impl FoldState {
-    /// Create an all-expanded fold state for `doc`.
-    pub fn new(doc: &Document) -> Self {
-        Self {
-            collapsed: vec![false; doc.sections.len()],
-            parents: doc.sections.iter().map(|s| s.parent).collect(),
-        }
-    }
-
-    /// Number of sections tracked.
-    pub fn len(&self) -> usize {
-        self.collapsed.len()
-    }
-
-    /// `true` if there are no sections.
-    pub fn is_empty(&self) -> bool {
-        self.collapsed.is_empty()
-    }
-
-    /// Whether `section` itself is collapsed (ancestors are not considered).
-    pub fn is_collapsed(&self, section: SectionId) -> bool {
-        self.collapsed.get(section).copied().unwrap_or(false)
-    }
-
-    /// Toggle a section. Returns the new collapsed state.
-    pub fn toggle(&mut self, section: SectionId) -> bool {
-        if let Some(c) = self.collapsed.get_mut(section) {
-            *c = !*c;
-            *c
-        } else {
-            false
-        }
-    }
-
-    /// Collapse a section.
-    pub fn collapse(&mut self, section: SectionId) {
-        if let Some(c) = self.collapsed.get_mut(section) {
-            *c = true;
-        }
-    }
-
-    /// Expand a section (ancestors unchanged; see [`FoldState::reveal`]).
-    pub fn expand(&mut self, section: SectionId) {
-        if let Some(c) = self.collapsed.get_mut(section) {
-            *c = false;
-        }
-    }
-
-    /// Collapse every section (`zM`).
-    pub fn collapse_all(&mut self) {
-        self.collapsed.iter_mut().for_each(|c| *c = true);
-    }
-
-    /// Expand every section (`zR`).
-    pub fn expand_all(&mut self) {
-        self.collapsed.iter_mut().for_each(|c| *c = false);
-    }
-
-    /// Expand `section` and all of its ancestors so that its body is visible
-    /// (used when jumping to a search match).
-    pub fn reveal(&mut self, section: SectionId) {
-        let mut cur = Some(section);
-        let mut guard = 0usize;
-        while let Some(s) = cur {
-            self.expand(s);
-            cur = self.parents.get(s).copied().flatten();
-            guard += 1;
-            if guard > self.parents.len() {
-                break;
-            }
-        }
-    }
-
-    /// `true` if any strict ancestor of `section` is collapsed.
-    pub fn ancestor_collapsed(&self, section: SectionId) -> bool {
-        let mut cur = self.parents.get(section).copied().flatten();
-        let mut guard = 0usize;
-        while let Some(p) = cur {
-            if self.is_collapsed(p) {
-                return true;
-            }
-            cur = self.parents.get(p).copied().flatten();
-            guard += 1;
-            if guard > self.parents.len() {
-                break;
-            }
-        }
-        false
-    }
-}
-
 impl Document {
     /// The innermost section containing `node` (any id, nested or top-level).
     pub fn section_of(&self, node: NodeId) -> Option<SectionId> {
@@ -253,12 +163,32 @@ impl Document {
             .find(|s| s.level <= level)
             .map(|s| s.id)
     }
+
+    /// The document outline: one entry per section, in document order.
+    ///
+    /// This is the table of contents, expressed in the format-neutral
+    /// vocabulary the sidebar consumes, so that the same widget draws a
+    /// Markdown TOC and a JSON structure tree.
+    pub fn outline(&self) -> Vec<OutlineEntry> {
+        self.sections
+            .iter()
+            .filter_map(|section| {
+                let heading = self.heading_of(section.id)?;
+                Some(OutlineEntry {
+                    node: section.heading,
+                    fold: Some(section.id),
+                    depth: depth_of(self, section.id),
+                    text: heading.text.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::parse;
+    use crate::document::markdown::parse;
 
     const DOC: &str = "\
 # A
@@ -326,33 +256,31 @@ b-body
         assert_eq!(doc.section_of(doc.nodes[3].id), Some(1));
     }
 
+    /// The format-neutral fold forest must be exactly the section hierarchy:
+    /// that identity is what lets `zM`, `zR` and a search reveal work on a
+    /// Markdown document through the same code as on a JSON one.
     #[test]
-    fn fold_state_basics() {
+    fn the_fold_forest_is_the_section_hierarchy() {
         let doc = parse(DOC);
-        let mut folds = FoldState::new(&doc);
-        assert_eq!(folds.len(), 5);
-        assert!(!folds.is_collapsed(0));
-        assert!(folds.toggle(0));
-        assert!(folds.is_collapsed(0));
-        assert!(!folds.toggle(0));
-        folds.collapse(1);
-        assert!(folds.is_collapsed(1));
-        folds.expand(1);
-        assert!(!folds.is_collapsed(1));
-        folds.collapse_all();
-        assert!((0..5).all(|s| folds.is_collapsed(s)));
-        folds.expand_all();
-        assert!((0..5).all(|s| !folds.is_collapsed(s)));
-        // Out-of-range ids are ignored.
-        folds.collapse(99);
-        assert!(!folds.toggle(99));
-        assert!(!folds.is_collapsed(99));
+        assert_eq!(doc.fold_parents(), [None, Some(0), Some(1), Some(0), None]);
+        let folds = FoldState::from_parents(doc.fold_parents());
+        assert_eq!(folds.len(), doc.sections.len());
+        for section in &doc.sections {
+            assert_eq!(folds.parent(section.id), section.parent);
+        }
+    }
+
+    #[test]
+    fn depth_is_nesting_rather_than_heading_level() {
+        let doc = parse("# A\n\n### Deep\n\n## Mid\n\n#### Deeper\n");
+        let depths: Vec<usize> = doc.sections.iter().map(|s| depth_of(&doc, s.id)).collect();
+        assert_eq!(depths, [0, 1, 1, 2]);
     }
 
     #[test]
     fn hidden_nodes_when_collapsed() {
         let doc = parse(DOC);
-        let mut folds = FoldState::new(&doc);
+        let mut folds = FoldState::from_parents(doc.fold_parents());
         let s = &doc.sections;
         folds.collapse(0); // collapse "A"
         assert!(
@@ -382,7 +310,7 @@ b-body
     #[test]
     fn reveal_expands_ancestors() {
         let doc = parse(DOC);
-        let mut folds = FoldState::new(&doc);
+        let mut folds = FoldState::from_parents(doc.fold_parents());
         folds.collapse_all();
         let target = doc.sections[2].body[0];
         assert!(doc.is_hidden(target, &folds));
@@ -410,7 +338,7 @@ b-body
     fn no_headings() {
         let doc = parse("just text\n\nmore\n");
         assert!(doc.sections.is_empty());
-        let folds = FoldState::new(&doc);
+        let folds = FoldState::from_parents(doc.fold_parents());
         assert!(folds.is_empty());
         assert!(!doc.is_hidden(0, &folds));
         assert_eq!(doc.section_of(1), None);

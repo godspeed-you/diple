@@ -6,7 +6,8 @@
 //! [`Match`] (byte offsets into the node's plain text) onto the styled spans
 //! it overlaps.
 
-use crate::document::{Inline, Inlines, LinkId, Match};
+use crate::document::markdown::{Inline, Inlines};
+use crate::document::{LinkId, Match};
 use crate::render::primitives::StyledSpan;
 use crate::render::theme::{Style, Theme};
 use crate::util::unicode::{self, TokenKind};
@@ -344,7 +345,8 @@ pub fn line_width(spans: &[StyledSpan]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, NodeKind, SearchIndex};
+    use crate::document::markdown::{parse, NodeKind};
+    use crate::document::SearchIndex;
 
     fn para(src: &str) -> Inlines {
         let doc = parse(src);

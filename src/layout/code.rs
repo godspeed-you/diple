@@ -15,7 +15,8 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
-use crate::document::{CodeBlock, Match, NodeId};
+use crate::document::markdown::CodeBlock;
+use crate::document::{Match, NodeId};
 use crate::layout::inline::{push_span, Piece};
 use crate::render::primitives::StyledSpan;
 use crate::render::theme::{Color, Style, Theme};
@@ -475,7 +476,7 @@ fn wrap_code_line(pieces: &[Piece], avail: usize) -> Vec<Vec<StyledSpan>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, NodeKind};
+    use crate::document::markdown::{parse, NodeKind};
 
     fn block(src: &str) -> (NodeId, CodeBlock) {
         let doc = parse(src);

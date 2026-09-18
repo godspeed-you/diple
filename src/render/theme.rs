@@ -360,6 +360,130 @@ pub struct Theme {
     pub diagram: Style,
     /// Warnings and placeholders (`[image: …]`, unrenderable diagrams).
     pub warning: Style,
+    /// Semantic roles of a structured document (JSON, YAML).
+    pub structured: StructuredStyles,
+}
+
+/// The palette a structured document is drawn with.
+///
+/// These are *roles*, not colours: a theme decides what a key or a null looks
+/// like, and the layout engine never reaches for a colour of its own. Colour
+/// is also never the only signal — strings are quoted, nulls and booleans are
+/// spelled, tags are written as the source wrote them — so the distinctions
+/// survive `NO_COLOR` and a monochrome terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredStyles {
+    /// A mapping key or object member name.
+    pub key: Style,
+    /// A sequence index label (`[0]`).
+    pub index: Style,
+    /// A string value.
+    pub string: Style,
+    /// A numeric value, in whatever form it was written.
+    pub number: Style,
+    /// `true` / `false`.
+    pub boolean: Style,
+    /// `null`, `~`, or an empty YAML value.
+    pub null: Style,
+    /// Braces, brackets, colons and sequence markers.
+    pub punctuation: Style,
+    /// A YAML comment.
+    pub comment: Style,
+    /// An explicit tag (`!!timestamp`).
+    pub tag: Style,
+    /// An anchor definition (`&name`).
+    pub anchor: Style,
+    /// An alias reference (`*name`).
+    pub alias: Style,
+    /// The `<<` merge key, which diple shows but never performs.
+    pub merge_key: Style,
+    /// A `%YAML` or `%TAG` directive.
+    pub directive: Style,
+    /// The `{4 entries}` summary of a collapsed container.
+    pub folded: Style,
+    /// The semantic path in the status line.
+    pub path: Style,
+    /// The row the semantic cursor is on.
+    pub cursor_row: Style,
+}
+
+impl StructuredStyles {
+    /// Derive the structured palette from the roles a theme already defines.
+    ///
+    /// Deriving rather than spelling sixteen more colours out per theme means
+    /// a theme is coherent by construction — a JSON string is the colour that
+    /// theme already uses for code, a comment the colour it uses for a
+    /// blockquote — and that a theme added later gets a usable palette
+    /// without knowing this type exists. A theme that wants something else
+    /// may still overwrite the field after building itself.
+    pub fn derived(theme: &Theme) -> StructuredStyles {
+        /// The colour of a role without its emphasis: a key on every row must
+        /// not be as loud as a heading once a page.
+        fn hue(style: Style) -> Style {
+            Style {
+                fg: style.fg,
+                ..Style::new()
+            }
+        }
+        StructuredStyles {
+            key: hue(theme.heading[0]),
+            index: hue(theme.list_marker),
+            string: hue(theme.code),
+            number: hue(theme.heading[2]),
+            boolean: hue(theme.heading[4]),
+            null: theme.quote_gutter,
+            punctuation: theme.table_border,
+            comment: theme.quote,
+            tag: hue(theme.heading[5]),
+            anchor: hue(theme.link),
+            alias: theme.link,
+            merge_key: hue(theme.warning),
+            directive: theme.quote_gutter,
+            folded: Style {
+                fg: theme.quote_gutter.fg,
+                italic: true,
+                ..Style::new()
+            },
+            path: hue(theme.toc),
+            // The cursor row borrows the selection background the theme
+            // already uses for the outline; a theme without one falls back to
+            // reverse video, which every terminal has.
+            cursor_row: match theme.toc_selected.bg {
+                Some(bg) => Style::new().bg(bg),
+                None => Style::new().reverse(),
+            },
+        }
+    }
+}
+
+impl Default for StructuredStyles {
+    /// A palette with no colours of its own.
+    ///
+    /// Every built-in theme replaces it through
+    /// [`Theme::with_derived_structured`] immediately after building itself;
+    /// the default exists so that the field can be written before the rest of
+    /// the theme is known, and so a hand-built `Theme` in a test is still
+    /// legal.
+    fn default() -> Self {
+        StructuredStyles {
+            key: Style::new(),
+            index: Style::new(),
+            string: Style::new(),
+            number: Style::new(),
+            boolean: Style::new(),
+            null: Style::new(),
+            punctuation: Style::new(),
+            comment: Style::new(),
+            tag: Style::new(),
+            anchor: Style::new(),
+            alias: Style::new(),
+            merge_key: Style::new(),
+            directive: Style::new(),
+            folded: Style::new(),
+            path: Style::new(),
+            cursor_row: Style::new().reverse(),
+        }
+    }
 }
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -373,6 +497,17 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Fill in [`Theme::structured`] from this theme's own roles.
+    ///
+    /// Every built-in theme ends its constructor with this call, so a theme is
+    /// never shipped with a structured palette that disagrees with the rest of
+    /// it, and adding a theme costs no extra colours.
+    #[must_use]
+    pub fn with_derived_structured(mut self) -> Theme {
+        self.structured = StructuredStyles::derived(&self);
+        self
+    }
+
     /// The built-in dark theme.
     pub fn dark() -> Theme {
         let base = rgb(0x1a, 0x1b, 0x26);
@@ -416,7 +551,9 @@ impl Theme {
             fold_marker: Style::new().fg(rgb(0xff, 0x9e, 0x64)),
             diagram: Style::new().fg(rgb(0x89, 0xdd, 0xff)),
             warning: Style::new().fg(rgb(0xff, 0x9e, 0x64)).bold(),
+            structured: StructuredStyles::default(),
         }
+        .with_derived_structured()
     }
 
     /// The built-in light theme.
@@ -464,7 +601,9 @@ impl Theme {
             fold_marker: Style::new().fg(rgb(0xa0, 0x40, 0x20)),
             diagram: Style::new().fg(rgb(0x0d, 0x6b, 0x7a)),
             warning: Style::new().fg(rgb(0xa0, 0x40, 0x20)).bold(),
+            structured: StructuredStyles::default(),
         }
+        .with_derived_structured()
     }
 
     /// The netrunner-console theme: cyan on black, crimson for anything that
@@ -527,7 +666,9 @@ impl Theme {
             fold_marker: Style::new().fg(crimson),
             diagram: Style::new().fg(cyan),
             warning: Style::new().fg(crimson_bright).bold(),
+            structured: StructuredStyles::default(),
         }
+        .with_derived_structured()
     }
 
     /// The phosphor-terminal theme: an early-nineties film's idea of a
@@ -588,7 +729,9 @@ impl Theme {
             fold_marker: Style::new().fg(amber),
             diagram: Style::new().fg(green),
             warning: Style::new().fg(amber).bold(),
+            structured: StructuredStyles::default(),
         }
+        .with_derived_structured()
     }
 
     /// A built-in theme by name (`dark`, `light`), or `None`.
@@ -659,8 +802,45 @@ impl Theme {
             fold_marker,
             diagram,
             warning,
+            structured,
         } = self;
+        let StructuredStyles {
+            key,
+            index,
+            string,
+            number,
+            boolean,
+            null,
+            punctuation,
+            comment,
+            tag,
+            anchor,
+            alias,
+            merge_key,
+            directive,
+            folded,
+            path,
+            cursor_row,
+        } = structured;
         let mut v: Vec<&mut Style> = heading.iter_mut().collect();
+        v.extend([
+            key,
+            index,
+            string,
+            number,
+            boolean,
+            null,
+            punctuation,
+            comment,
+            tag,
+            anchor,
+            alias,
+            merge_key,
+            directive,
+            folded,
+            path,
+            cursor_row,
+        ]);
         v.extend([
             screen,
             text,

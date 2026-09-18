@@ -1,31 +1,28 @@
-//! Document AST types. These are interface contracts shared by all
-//! workstreams; extend only additively.
+//! The Markdown AST.
+//!
+//! Node ids are assigned in pre-order over the whole tree — including nested
+//! nodes inside lists, quotes and footnotes — so they are unique, dense
+//! (`0..node_count`) and monotonically increasing in source order. That is
+//! the same contract the structured model keeps, which is what lets the
+//! layout engine, the viewport anchor and the search index name a semantic
+//! unit the same way whatever format produced it.
 
 use super::anchors::AnchorIndex;
 use super::links::Link;
 use super::sections::{Section, SectionId};
+use crate::document::folds::FoldId;
+use crate::document::source::SourceDocument;
 
-/// Identifier of a node. Ids are assigned in pre-order over the whole tree
-/// (including nested nodes inside lists, quotes and footnotes), so they are
-/// unique, dense (`0..node_count`) and monotonically increasing in source
-/// order.
-pub type NodeId = usize;
+pub use crate::document::source::SourceSpan;
+pub use crate::document::NodeId;
 
-/// Dense index into [`Document::links`].
-pub type LinkId = usize;
-
-/// Byte range in the original Markdown source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SourceSpan {
-    /// Inclusive start byte offset.
-    pub start: usize,
-    /// Exclusive end byte offset.
-    pub end: usize,
-}
+pub use crate::document::LinkId;
 
 /// A parsed Markdown document together with its derived navigation data.
 #[derive(Debug, Clone, Default)]
 pub struct Document {
+    /// The source the document was parsed from.
+    pub source: SourceDocument,
     /// Top-level block nodes in source order.
     pub nodes: Vec<Node>,
     /// Section hierarchy derived from top-level headings (see `sections.rs`).
@@ -44,6 +41,8 @@ pub struct Document {
     /// For every node id, the section it belongs to (if any). Indexed by
     /// `NodeId`; filled in by `sections::build`.
     pub node_section: Vec<Option<SectionId>>,
+    /// Full-text index over every node, in document order.
+    pub search: crate::document::search::SearchIndex,
 }
 
 /// A block-level node.
@@ -289,6 +288,13 @@ impl Document {
     /// Ids of all heading nodes that define sections, in document order.
     pub fn heading_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.sections.iter().map(|s| s.heading)
+    }
+
+    /// The fold forest: Markdown's foldable units are its sections, so a
+    /// [`FoldId`] *is* a [`SectionId`] and the parent chain is the section
+    /// hierarchy.
+    pub fn fold_parents(&self) -> Vec<Option<FoldId>> {
+        self.sections.iter().map(|s| s.parent).collect()
     }
 }
 

@@ -1,10 +1,12 @@
 //! Small shared helpers that do not belong to a specific layer.
 //!
+//! * [`text`] — making document-controlled text safe to put on a terminal,
 //! * [`unicode`] — grapheme- and width-correct string measurement and slicing
 //!   (used by `layout`, `render` and `mermaid` alike),
 //! * [`viewport`] — vertical windowing and horizontal slicing of a render
 //!   tree (used by `app` and `render`).
 
+pub mod text;
 pub mod unicode;
 pub mod viewport;
 

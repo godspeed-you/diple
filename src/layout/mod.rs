@@ -36,10 +36,10 @@ pub use crate::util::unicode;
 use std::collections::HashMap;
 
 use crate::config::schema::{Config, TableMode};
-use crate::document::{
-    Document, FoldState, Footnote, Heading, Image, Inlines, List, ListItem, Match, MermaidBlock,
-    Node, NodeId, NodeKind,
+use crate::document::markdown::{
+    Document, Footnote, Heading, Image, Inlines, List, ListItem, MermaidBlock, Node, NodeKind,
 };
+use crate::document::{FoldState, Match, NodeId};
 use crate::layout::code::{CodeCache, CodeOptions};
 use crate::layout::inline::{layout_inlines, line_width, push_span};
 use crate::layout::list::{marker, marker_width, task_box, INDENT_PER_LEVEL};
@@ -419,12 +419,12 @@ impl Layout {
     }
 }
 
-/// The code of a node as a [`crate::document::CodeBlock`], including the
+/// The code of a node as a [`crate::document::markdown::CodeBlock`], including the
 /// verbatim source shown for a Mermaid fence that could not be rendered.
-fn code_of(doc: &Document, node: NodeId) -> Option<crate::document::CodeBlock> {
+fn code_of(doc: &Document, node: NodeId) -> Option<crate::document::markdown::CodeBlock> {
     match &doc.node(node)?.kind {
         NodeKind::CodeBlock(block) => Some(block.clone()),
-        NodeKind::Mermaid(block) => Some(crate::document::CodeBlock {
+        NodeKind::Mermaid(block) => Some(crate::document::markdown::CodeBlock {
             language: Some("mermaid".to_string()),
             code: block.source.clone(),
         }),
@@ -885,7 +885,7 @@ impl<'a> Builder<'a> {
         prefix: &[StyledSpan],
         avail: usize,
     ) {
-        let block = crate::document::CodeBlock {
+        let block = crate::document::markdown::CodeBlock {
             language: Some("mermaid".to_string()),
             code: block.source.clone(),
         };
@@ -897,7 +897,7 @@ impl<'a> Builder<'a> {
     fn code_block(
         &mut self,
         id: NodeId,
-        block: &crate::document::CodeBlock,
+        block: &crate::document::markdown::CodeBlock,
         prefix: &[StyledSpan],
         avail: usize,
     ) {
@@ -957,7 +957,8 @@ pub fn plain_style() -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, SearchIndex};
+    use crate::document::markdown::parse;
+    use crate::document::SearchIndex;
     use crate::testing::plain as render;
 
     #[test]
