@@ -1,7 +1,7 @@
 //! Inline layout: [`Inlines`] → styled spans → wrapped lines.
 //!
 //! The flattening order and the produced plain text match
-//! [`crate::document::ast::inlines_to_text`] byte for byte, which is what the
+//! [`crate::document::markdown::inlines_to_text`] byte for byte, which is what the
 //! search index is built from. That is what makes it possible to map a
 //! [`Match`] (byte offsets into the node's plain text) onto the styled spans
 //! it overlaps.
@@ -47,7 +47,7 @@ impl Piece {
 ///
 /// `offset` is the running byte offset into the node's plain text and is
 /// advanced by exactly the number of bytes that
-/// [`crate::document::ast::inlines_to_text`] would produce.
+/// [`crate::document::markdown::inlines_to_text`] would produce.
 pub fn flatten(inlines: &Inlines, theme: &Theme, base: Style, offset: &mut usize) -> Vec<Piece> {
     let mut out = Vec::new();
     flatten_into(inlines, theme, base, None, offset, &mut out);

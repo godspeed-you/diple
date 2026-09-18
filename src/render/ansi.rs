@@ -78,7 +78,7 @@ fn styled(text: &str, style: Style, level: ColorLevel) -> String {
     }
 }
 
-/// Serialize the whole tree with SGR escapes, one line per [`RenderLine`].
+/// Serialize the whole tree with SGR escapes, one line per [`RenderLine`](crate::render::primitives::RenderLine).
 ///
 /// Trailing whitespace is trimmed exactly as [`RenderTree::to_plain_text`]
 /// trims it, so the two serializers differ only in the escapes.

@@ -329,7 +329,7 @@ string_enum! {
     /// How a document is read.
     ///
     /// The configuration's counterpart to
-    /// [`FormatRequest`](crate::document::FormatRequest): the document layer
+    /// [`crate::document::FormatRequest`]: the document layer
     /// owns what the formats *are*, and this enum is how the file and the
     /// `--format` flag name one. [`FormatMode::request`] is the only bridge
     /// between the two, so the spellings cannot drift apart unnoticed.
