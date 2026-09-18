@@ -130,7 +130,10 @@ impl ScalarStyle {
         matches!(self, ScalarStyle::Literal | ScalarStyle::Folded)
     }
 
-    /// The source indicator (`|`, `>`) for a block style.
+    /// The bare source indicator (`|`, `>`) for a block style, without the
+    /// indent and chomping indicators that may follow it. A scalar read from
+    /// YAML carries the header it was actually written with; this is the
+    /// fallback for one that does not, such as a value diple constructs.
     pub fn block_indicator(self) -> Option<&'static str> {
         match self {
             ScalarStyle::Literal => Some("|"),
@@ -153,6 +156,21 @@ pub struct ScalarValue {
     /// The lexical source form, when showing it is more truthful than showing
     /// `text`: `1e6` rather than `1000000`, `~` rather than `null`.
     pub source: Option<String>,
+    /// The whole block header of a block scalar, as the source wrote it:
+    /// `|`, `|+`, `>-`, `|2-`.
+    ///
+    /// It is kept apart from `source` because the two answer different
+    /// questions. `source` is what to show *instead of* `text` — `display()`
+    /// returns it, and it is what search indexes as the value — whereas the
+    /// header is not a spelling of the value at all: it introduces it, and the
+    /// content still renders on the lines beneath. Folding it into `source`
+    /// would make the scalar read and search as `|+` and lose its content.
+    ///
+    /// The chomping indicator is the difference between keeping and stripping
+    /// the trailing newlines and the indent indicator the difference between
+    /// content and indentation, so dropping either would have diple show a
+    /// document that says something its source does not (spec §10.10).
+    pub block_header: Option<String>,
 }
 
 impl ScalarValue {
@@ -163,6 +181,7 @@ impl ScalarValue {
             kind,
             style: ScalarStyle::Plain,
             source: None,
+            block_header: None,
         }
     }
 
@@ -173,6 +192,7 @@ impl ScalarValue {
             kind: ScalarKind::String,
             style: ScalarStyle::DoubleQuoted,
             source: None,
+            block_header: None,
         }
     }
 
@@ -180,6 +200,15 @@ impl ScalarValue {
     /// decoded content otherwise.
     pub fn display(&self) -> &str {
         self.source.as_deref().unwrap_or(&self.text)
+    }
+
+    /// The header to render where a block scalar's content begins: the one the
+    /// source wrote when it is known, the style's bare indicator otherwise.
+    pub fn block_indicator(&self) -> Option<&str> {
+        match &self.block_header {
+            Some(header) => Some(header),
+            None => self.style.block_indicator(),
+        }
     }
 }
 
@@ -1087,6 +1116,24 @@ mod tests {
         assert!(ScalarStyle::Literal.is_block());
         assert_eq!(ScalarStyle::Folded.block_indicator(), Some(">"));
         assert_eq!(ScalarStyle::Plain.block_indicator(), None);
+    }
+
+    #[test]
+    fn a_block_scalar_shows_the_header_it_was_written_with() {
+        let mut v = ScalarValue::plain("a\n\n", ScalarKind::String);
+        v.style = ScalarStyle::Literal;
+        assert_eq!(
+            v.block_indicator(),
+            Some("|"),
+            "a value with no remembered header falls back to the bare indicator"
+        );
+        v.block_header = Some("|+".to_string());
+        assert_eq!(v.block_indicator(), Some("|+"));
+        assert_eq!(
+            v.display(),
+            "a\n\n",
+            "the header introduces the content; it does not replace it"
+        );
     }
 
     #[test]

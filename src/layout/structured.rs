@@ -442,7 +442,7 @@ impl<'a> Builder<'a> {
         if value.style.is_block() {
             // A block scalar keeps its shape: the indicator on the key's row,
             // the content on rows of its own beneath it.
-            if let Some(indicator) = value.style.block_indicator() {
+            if let Some(indicator) = value.block_indicator() {
                 row.push(indicator, self.theme.structured.punctuation);
             }
             let indent = self.indent_of(node) + 1;

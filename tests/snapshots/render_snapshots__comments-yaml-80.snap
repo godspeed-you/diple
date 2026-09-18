@@ -10,8 +10,8 @@ expression: text
 width: 100  # 0 means "use the terminal width"
 theme: dark  # dark | light | auto
 # Folding defaults.
-# Start with every section collapsed.
 folds:
+  # Start with every section collapsed.
   collapsed: false
   # Deeper than this is never folded automatically.
   max_depth: 3

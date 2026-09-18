@@ -8,16 +8,16 @@ literal: |
 
     indented line
   last line
-literal_strip: |
+literal_strip: |-
   no trailing newline
-literal_keep: |
+literal_keep: |+
   keep the blank lines below
 
 folded: >
   This long paragraph is folded onto one line when it is read, because a folded
     scalar joins its lines with spaces.
   A blank line stays a paragraph break.
-folded_strip: >
+folded_strip: >-
   folded and stripped
 script: |
   #!/bin/sh

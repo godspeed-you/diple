@@ -8,9 +8,9 @@ literal: |
 
     indented line
   last line
-literal_strip: |
+literal_strip: |-
   no trailing newline
-literal_keep: |
+literal_keep: |+
   keep the blank lines below
 
 folded: >
@@ -19,7 +19,7 @@ folded: >
     folded scalar joins its lines with
     spaces.
   A blank line stays a paragraph break.
-folded_strip: >
+folded_strip: >-
   folded and stripped
 script: |
   #!/bin/sh

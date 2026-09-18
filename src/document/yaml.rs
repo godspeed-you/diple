@@ -438,14 +438,12 @@ impl<'a> Loader<'a> {
             .last()
             .and_then(|f| f.pending_key.as_ref())
             .is_some_and(|k| k.text == "<<");
-        let above = if self.claims_comments_above(row) {
-            std::mem::take(&mut self.pending_above)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let claimed = self.comments_claimed_above(row);
+        let above: Vec<_> = self
+            .pending_above
+            .drain(..claimed)
+            .map(|(id, _)| id)
+            .collect();
         let meta = NodeMeta {
             anchor: self.prelude.anchor(anchor).map(str::to_string),
             tag: tag.map(tag_text),
@@ -456,8 +454,9 @@ impl<'a> Loader<'a> {
         (!meta.is_empty()).then_some(meta)
     }
 
-    /// Whether the node about to be created is the one the pending own-line
-    /// comments describe.
+    /// How many of the pending own-line comments the node about to be created
+    /// describes. They are in source order, so it is always a prefix; the rest
+    /// wait for the row that follows.
     ///
     /// A block collection begins where its first entry begins, so the naive
     /// answer — "the next node built" — hands
@@ -474,22 +473,28 @@ impl<'a> Loader<'a> {
     /// * a leaf always takes it — the leaf *is* a row;
     /// * a document root never takes it. A root is the document, not a row
     ///   within it, so the comment passes down to the first entry;
-    /// * a keyed container takes it only if the comment was written above the
-    ///   key that names it. A comment written *after* that key, as in
-    ///   `foo:` / `# why` / `bar: 1`, stands above `bar` and waits for it.
+    /// * a keyed container takes those written above the key that names it,
+    ///   and only those. A comment written *after* that key, as in `foo:` /
+    ///   `# why` / `bar: 1`, stands above `bar` and waits for it — and it does
+    ///   so even when the same key also had comments above it, which is the
+    ///   case an all-or-nothing answer got wrong: `# about foo` and `# why`
+    ///   were pending together, the first of them stood above `foo`, and both
+    ///   were handed to `foo`.
     ///
     /// A container that is a sequence item has no key, but its `- ` does start
-    /// a row of its own, so it takes the comment.
-    fn claims_comments_above(&self, row: Row) -> bool {
+    /// a row of its own, so it takes the comments.
+    fn comments_claimed_above(&self, row: Row) -> usize {
         if row == Row::Leaf {
-            return true;
+            return self.pending_above.len();
         }
         let Some(frame) = self.frames.last() else {
-            return false;
+            return 0;
         };
-        match (&frame.pending_key, self.pending_above.first()) {
-            (Some(key), Some((_, at))) => *at < key.span.start,
-            _ => true,
+        match &frame.pending_key {
+            Some(key) => self
+                .pending_above
+                .partition_point(|(_, at)| *at < key.span.start),
+            None => self.pending_above.len(),
         }
     }
 
@@ -557,6 +562,7 @@ impl<'a> Loader<'a> {
                 kind: ScalarKind::Null,
                 style,
                 source: Some(String::new()),
+                block_header: None,
             };
         }
         let kind = tag
@@ -567,6 +573,10 @@ impl<'a> Loader<'a> {
             kind,
             style,
             source: None,
+            block_header: style
+                .is_block()
+                .then(|| block_header(self.text, span.start))
+                .flatten(),
         }
     }
 
@@ -690,6 +700,65 @@ fn is_yaml_number(value: &str) -> bool {
     }
 }
 
+/// The block header a block scalar was written with — `|`, `|+`, `>-`, `|2-` —
+/// read out of the source that starts at `content`.
+///
+/// Neither the event stream nor the token stream carries it: granit resolves
+/// the indent and chomping indicators while scanning and reports only
+/// [`YamlStyle::Literal`] or [`YamlStyle::Folded`] together with the already
+/// chomped content, whose span begins at the content rather than at the
+/// header. The source is therefore the only place left to read it from, and
+/// the reader must see it: `|+` and `|-` are different documents.
+///
+/// The header is the last thing on the line that introduces the scalar, save
+/// for a comment; between that line and the content there can only be empty
+/// lines, because inside a block scalar every other line is content.
+fn block_header(text: &str, content: usize) -> Option<String> {
+    let mut line_start = text.get(..content)?.rfind('\n').map_or(0, |nl| nl + 1);
+    while line_start > 0 {
+        let end = line_start - 1;
+        line_start = text.get(..end)?.rfind('\n').map_or(0, |nl| nl + 1);
+        let line = text.get(line_start..end)?.trim_end_matches('\r');
+        if !line.trim().is_empty() {
+            return header_of_line(line);
+        }
+    }
+    None
+}
+
+/// The block header written on `line`, if it ends with one.
+///
+/// The indicator is taken to be the first `|` or `>` that stands at the start
+/// of a token and is followed by nothing but an indent indicator, a chomping
+/// indicator and possibly a comment — which is what tells the header of
+/// `keep: |+  # kept` apart from a `|` inside a key or a comment.
+fn header_of_line(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    for (i, byte) in bytes.iter().enumerate() {
+        if !matches!(byte, b'|' | b'>') {
+            continue;
+        }
+        if i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &bytes[i + 1..];
+        let indicators = rest
+            .iter()
+            .take_while(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-'))
+            .count();
+        let (indicators, tail) = (&rest[..indicators], &rest[indicators..]);
+        let digits = indicators.iter().filter(|b| b.is_ascii_digit()).count();
+        let signs = indicators.len() - digits;
+        let rest_of_line = tail.trim_ascii_start();
+        let ends_line = (tail.is_empty() || tail[0].is_ascii_whitespace())
+            && (rest_of_line.is_empty() || rest_of_line[0] == b'#');
+        if digits <= 1 && signs <= 1 && ends_line {
+            return Some(line[i..i + 1 + indicators.len()].to_string());
+        }
+    }
+    None
+}
+
 /// The alias name read straight out of the source, for the case where the
 /// anchor table could not supply it.
 fn alias_name_from_source(text: &str, span: SourceSpan) -> String {
@@ -781,6 +850,62 @@ mod tests {
                 format!("{}{} {what}", "  ".repeat(n.depth), d.label(n.id))
             })
             .collect()
+    }
+
+    /// The rows a reader sees, laid out at a width no fixture here reaches.
+    ///
+    /// The model is only half the claim: a style or a comment that survives
+    /// parsing but never reaches a row is still lost to the reader.
+    fn rows(src: &str) -> Vec<String> {
+        rows_with(src, |_, _| {})
+    }
+
+    /// The rows a reader sees after `fold` has had its way with the fold
+    /// state — the way a collapsed subtree is checked.
+    fn rows_with(
+        src: &str,
+        fold: impl FnOnce(&crate::document::DocumentModel, &mut crate::document::FoldState),
+    ) -> Vec<String> {
+        use crate::layout::{Layout, LayoutOptions};
+        let model = crate::document::DocumentModel::structured(doc(src));
+        let theme = crate::render::theme::Theme::dark();
+        let mut folds = model.fold_state();
+        fold(&model, &mut folds);
+        let opts = LayoutOptions::new(100, &theme).with_folds(&folds);
+        Layout::build(&model, &opts)
+            .to_plain_text()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The fold over the container reached by the mapping key `key`.
+    fn fold_of(model: &crate::document::DocumentModel, key: &str) -> crate::document::FoldId {
+        let d = model.as_structured().expect("a structured document");
+        (0..model.fold_parents().len())
+            .find(|fold| {
+                model
+                    .fold_node(*fold)
+                    .and_then(|node| d.node(node))
+                    .and_then(|node| node.key())
+                    .is_some_and(|k| k.text == key)
+            })
+            .unwrap_or_else(|| panic!("no foldable container keyed {key:?}"))
+    }
+
+    /// The node that owns the comment whose text contains `needle`.
+    fn comment_owner(d: &StructuredDocument, needle: &str) -> String {
+        let id = d
+            .comments()
+            .iter()
+            .position(|c| c.text.contains(needle))
+            .unwrap_or_else(|| panic!("no comment saying {needle:?}"));
+        let node = d
+            .nodes()
+            .iter()
+            .find(|n| n.comments_above().contains(&id) || n.comment_right() == Some(id))
+            .unwrap_or_else(|| panic!("comment {needle:?} belongs to no node"));
+        d.label(node.id)
     }
 
     #[test]
@@ -895,6 +1020,59 @@ mod tests {
     }
 
     #[test]
+    fn a_block_scalar_keeps_the_header_the_author_wrote() {
+        // `|+` keeps the trailing newlines, `|-` strips them and `|` clips
+        // them to one: three different documents, which a bare `|` on every
+        // row would present as the same one.
+        let src =
+            "keep: |+\n  a\n\nstrip: |-\n  b\nclip: |\n  c\nfold: >-\n  d\nindent: |2\n   e\n";
+        let d = doc(src);
+        let headers: Vec<&str> = d
+            .nodes()
+            .iter()
+            .filter_map(|n| n.scalar()?.block_header.as_deref())
+            .collect();
+        assert_eq!(headers, ["|+", "|-", "|", ">-", "|2"]);
+        let shown: Vec<String> = rows(src).into_iter().filter(|r| r.contains(':')).collect();
+        assert_eq!(
+            shown,
+            [
+                "  keep: |+",
+                "  strip: |-",
+                "  clip: |",
+                "  fold: >-",
+                "  indent: |2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_header_is_found_past_a_comment_and_past_empty_lines() {
+        // The header is the last thing on its line but a comment may follow
+        // it, and the content may start several lines below it.
+        let src = "a: |+ # kept on purpose\n\n\n  body\nb: >-\n  folded\n";
+        let d = doc(src);
+        let headers: Vec<&str> = d
+            .nodes()
+            .iter()
+            .filter_map(|n| n.scalar()?.block_header.as_deref())
+            .collect();
+        assert_eq!(headers, ["|+", ">-"]);
+        assert_eq!(rows(src)[0], "  a: |+  # kept on purpose");
+    }
+
+    #[test]
+    fn a_block_header_is_not_confused_with_a_bar_written_elsewhere() {
+        let d = doc("a > b: |\n  x\n'c|d': >\n  y\ne: |\n  f | g\n");
+        let headers: Vec<&str> = d
+            .nodes()
+            .iter()
+            .filter_map(|n| n.scalar()?.block_header.as_deref())
+            .collect();
+        assert_eq!(headers, ["|", ">", "|"]);
+    }
+
+    #[test]
     fn quoting_styles_survive() {
         let d = doc("a: plain\nb: 'single'\nc: \"double\\ttab\"\n");
         let styles: Vec<ScalarStyle> = d
@@ -970,6 +1148,62 @@ mod tests {
         assert_eq!(
             d.comment(name.comments_above()[0]).unwrap().text,
             " Chosen by the release tooling."
+        );
+    }
+
+    #[test]
+    fn a_comment_above_a_key_and_one_below_it_go_to_different_rows() {
+        // Both comments are pending when the `folds` mapping opens, because a
+        // block mapping opens where its first entry opens. Only the one
+        // written above the key `folds` describes `folds`.
+        let src = "# Folding defaults.\nfolds:\n  # Start collapsed.\n  collapsed: false\n";
+        let d = doc(src);
+        assert_eq!(comment_owner(&d, "Folding defaults"), "folds");
+        assert_eq!(comment_owner(&d, "Start collapsed"), "collapsed");
+        assert_eq!(
+            rows(src),
+            [
+                "  # Folding defaults.",
+                "\u{25bc} folds:",
+                "    # Start collapsed.",
+                "    collapsed: false",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_comment_inside_a_sequence_stays_inside_it() {
+        let src = "# The ports.\nports:\n  # The one the proxy uses.\n  - 80\n  - 443\n";
+        let d = doc(src);
+        assert_eq!(comment_owner(&d, "The ports"), "ports");
+        assert_eq!(comment_owner(&d, "the proxy"), "[0]");
+        assert_eq!(
+            rows(src),
+            [
+                "  # The ports.",
+                "\u{25bc} ports:",
+                "    # The one the proxy uses.",
+                "    [0] 80",
+                "    [1] 443",
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsing_a_mapping_hides_the_comment_written_above_its_first_entry() {
+        // §10.3: a comment collapses with the subtree it belongs to. Hoisting
+        // it to the parent would leave it on screen describing a row that is
+        // no longer there.
+        let src =
+            "# Folding defaults.\nfolds:\n  # Start collapsed.\n  collapsed: false\nother: 1\n";
+        let shown = rows_with(src, |model, folds| folds.collapse(fold_of(model, "folds")));
+        assert!(
+            shown.iter().any(|r| r.contains("Folding defaults")),
+            "the comment describing the collapsed row is still shown: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|r| r.contains("Start collapsed")),
+            "a comment inside the collapsed subtree is still on screen: {shown:?}"
         );
     }
 
