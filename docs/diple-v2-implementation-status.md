@@ -1,8 +1,79 @@
 # diple 2.0 — implementation status
 
 **Resumed from:** commit `b4cf2c4`
-**Current state:** commit `f6e8ba7`, 2026-09-18
+**State described:** everything up to and including `f7f7eef` — this file is
+the commit after it, on `main`, 2026-09-18
 **Suite:** 731 tests, all passing
+
+---
+
+## Resuming: what is left
+
+**This section is the only part of this file that is about the future. Delete
+it when the three items below are done.** Everything else records state that
+was true at `f7f7eef` and was checked against the code, not remembered.
+
+The release is functionally complete: 731 tests pass, every gate
+in §6 is green, and §7 records an evidence-backed status for AC-01…AC-23. What
+is missing is the *independent* sign-off and two small fixes that were
+deliberately held back so that the sign-off would run against a stationary
+tree.
+
+### 1. Run the independent compliance audit — the actual gate
+
+Not yet done. One was started in the session that produced `f7f7eef` and did
+not finish before the session ended, so **no independent review has been
+recorded**. §7's statuses are the implementer's own assessment; they are
+evidence-backed but they are not a second opinion.
+
+Use a fresh agent that had no part in the implementation. It must read the
+whole of `docs/diple-v2-structured-documents-spec.md`, treat §7 of this file
+as a claim rather than as evidence, exercise the real binary (including
+interactively — there is a working pseudo-terminal driver at
+`/tmp/diple-manual/drive.py` if that path still exists; otherwise write one,
+it is about forty lines), and classify every criterion VERIFIED / FAILED /
+NOT VERIFIED / DEFERRED. Press hardest on AC-01 (Markdown must not have
+regressed — compare against the 1.2.0 binary, `git worktree add /tmp/check-12
+8147fdc`), AC-09, AC-13, AC-18 (try escapes in keys, values, comments, tags,
+anchors *and* error messages, and check the status-line path, which is where
+the one real breach was found) and AC-23, which is a judgement about the
+architecture rather than a feature.
+
+Any mandatory criterion that is not VERIFIED means the release is not
+complete. Fix, then audit again.
+
+### 2. `zM` / `zR` say "sections" in a document that has none
+
+`src/app/state/input.rs:358,363` set the message `all sections collapsed` /
+`all sections expanded` for every format. The key hints beside them already
+say "all containers" for JSON and YAML (`src/app/hints.rs:244-247`), so the
+two disagree on screen in the same frame.
+
+Fix by giving both the same source of wording rather than by editing the
+string in one place — that is how they drifted apart. Everything else in the
+app layer is already format-aware (`no_structure_message`, `fold_current`,
+the hint groups), so this is the last one.
+
+### 3. A wall-clock assertion that flakes under load
+
+`src/layout/mod.rs:1436` asserts that laying out the 1 KB README takes under
+10 ms. It is inherited from 1.x, it passes comfortably on an idle machine, and
+it was observed failing while three other jobs were compiling.
+
+Spec §19.3 argues against exactly this — "rather than choosing meaningless
+universal millisecond numbers" — and asks for budgets derived from measurement
+on a reference environment. Those benchmarks now exist (`benches/startup.rs`,
+`benches/large.rs`). Keep the determinism half of the test, which is valuable
+and stable, and let the benchmarks carry the performance claim.
+
+### What not to redo
+
+The previous handover cost a session's worth of work by describing states that
+had already been superseded. To avoid repeating that: §3 lists what the old
+handover got wrong, §5 lists every defect execution found and how it was
+resolved, and §8 lists what was left undone **on purpose** with the reasoning.
+Read those three before changing anything, and check any statement here
+against the code before acting on it — including this one.
 
 **Normative source of truth:** `docs/diple-v2-structured-documents-spec.md`.
 This file records *decisions, state and evidence*, never requirements. Where
