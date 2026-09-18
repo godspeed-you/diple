@@ -78,6 +78,14 @@ every key, every setting and every behaviour it had in 1.2.
   `[structured]` section (`indent = 2`, `path = "auto"`, `show_indices = true`,
   `collapsed_summary = true`). Every one has a default that needs no
   configuration, and all of them are settable at `:` and completed by `Tab`.
+- **Long keys and scalars follow `wrap`** like any other content: a value too
+  wide for the terminal wraps with its continuation indented past its key, so
+  the pair still reads as a pair, and `--no-wrap` leaves the row full width for
+  `h`/`l`. A row whose own indentation has already filled the terminal is left
+  long either way, because wrapping it would give mostly blank margin. A
+  quoted scalar is escaped the way its own dialect escapes, so what is between
+  the quotes is never ambiguous and an embedded newline is visible rather than
+  flattened to a space.
 - **A `DOCUMENT FORMATS` section in the man page**, and the shell completions
   now offer the new options and their values.
 
