@@ -614,3 +614,204 @@ fn the_snapshot_comparison_tables_name_real_fixtures() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Structured documents at the command line (spec §23.3)
+//
+// Everything below runs the real binary with a non-tty stdout, which is the
+// path a pipeline takes. What is asserted is what a user would see: the
+// document, the exit code, and which stream the words came out of.
+// ---------------------------------------------------------------------------
+
+/// Run diple over `text` on stdin, with the given extra arguments.
+fn piped(args: &[&str], text: &str) -> std::process::Output {
+    let mut child = diple()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn diple");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(text.as_bytes())
+        .expect("write stdin");
+    child.wait_with_output().expect("wait")
+}
+
+#[test]
+fn a_json_file_renders_as_a_structured_document() {
+    let out = diple().arg(fixture("nested.json")).output().expect("run");
+    assert!(out.status.success(), "status: {:?}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Semantic rendering, not the source: keys unquoted, values quoted,
+    // nesting by indentation.
+    assert!(text.contains("  name: \"diple\""), "got: {text}");
+    assert!(!text.contains("\u{1b}"), "no escapes in a pipeline");
+}
+
+#[test]
+fn a_yaml_file_renders_as_a_structured_document() {
+    let out = diple()
+        .arg(fixture("k8s-deployment.yaml"))
+        .output()
+        .expect("run");
+    assert!(out.status.success(), "status: {:?}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("apiVersion: apps/v1"), "got: {text}");
+    assert!(!text.contains("\u{1b}"));
+}
+
+#[test]
+fn json_and_structured_yaml_are_detected_on_stdin() {
+    let json = piped(&[], r#"{"metadata": {"name": "nginx"}, "replicas": 3}"#);
+    assert!(json.status.success());
+    let text = String::from_utf8_lossy(&json.stdout);
+    assert!(text.contains("name: \"nginx\""), "read as JSON: {text}");
+
+    // The shape `kubectl -o yaml` produces: nested mappings, no ambiguity.
+    let yaml = piped(&[], "metadata:\n  name: nginx\nspec:\n  replicas: 3\n");
+    assert!(yaml.status.success());
+    let text = String::from_utf8_lossy(&yaml.stdout);
+    assert!(text.contains("name: nginx"), "read as YAML: {text}");
+    assert!(!text.contains('"'), "YAML keeps its own quoting: {text}");
+}
+
+/// AC-06: a permissive YAML parser must not steal ordinary prose.
+#[test]
+fn ambiguous_stdin_stays_markdown() {
+    for source in ["hello\n", "- one\n- two\n", "title: hello\n", "42\n"] {
+        let out = piped(&[], source);
+        assert!(out.status.success(), "{source:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("\u{2500}") && !text.contains('{'),
+            "{source:?} was claimed by a structured parser: {text}"
+        );
+    }
+    // A Markdown list renders as bullets, which YAML would not produce.
+    let out = piped(&[], "- one\n- two\n");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("one") && text.contains("two"), "got: {text}");
+}
+
+/// AC-07: an explicit format beats the name and the content alike.
+#[test]
+fn an_explicit_format_overrides_name_and_content() {
+    let out = piped(&["--format", "yaml", "-"], "metadata:\n  name: nginx\n");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("name: nginx"));
+
+    let out = piped(&["--format", "json", "-"], r#"{"a": 1}"#);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("a: 1"));
+
+    // A YAML file read as Markdown is prose, not a document tree.
+    let out = diple()
+        .args(["--format", "markdown"])
+        .arg(fixture("k8s-deployment.yaml"))
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !text.contains("\u{25bc}") && !text.contains("\u{25b6}"),
+        "Markdown has no container fold markers here: {text}"
+    );
+}
+
+/// AC-17 and §17.3: a stated format that does not parse is an error on
+/// stderr with a non-zero status — never a silent fallback to Markdown.
+#[test]
+fn an_invalid_structured_document_reports_and_exits_non_zero() {
+    for (file, format) in [("invalid.json", "JSON"), ("invalid.yaml", "YAML")] {
+        let out = diple().arg(fixture(file)).output().expect("run");
+        assert_eq!(out.status.code(), Some(1), "{file}: {:?}", out.status);
+        assert!(out.stdout.is_empty(), "{file} rendered something anyway");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(format), "{file}: names the format: {err}");
+        assert!(err.contains(file), "{file}: names the source: {err}");
+        assert!(
+            err.lines().any(|l| l.contains(&format!("{file}:"))
+                && l.rsplit(':').take(2).all(|p| p.parse::<usize>().is_ok())),
+            "{file}: gives a line and column: {err}"
+        );
+        assert!(!err.contains("panicked"), "{file}: {err}");
+    }
+}
+
+/// An unparsable document offered only as a guess falls back rather than
+/// failing: nothing had claimed it (§17.2).
+#[test]
+fn a_guess_that_does_not_parse_falls_back_to_markdown() {
+    let out = piped(&[], "{\"a\": 1,\n");
+    assert!(out.status.success(), "status: {:?}", out.status);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\"a\""));
+}
+
+#[test]
+fn a_structured_document_survives_a_closed_pipe() {
+    let mut producer = diple()
+        .arg(fixture("k8s-deployment.yaml"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn diple");
+    let head = Command::new("head")
+        .arg("-1")
+        .stdin(Stdio::from(producer.stdout.take().expect("stdout")))
+        .output()
+        .expect("run head");
+    let out = producer.wait_with_output().expect("wait");
+    assert!(!head.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "closing the pipe is not an error"
+    );
+}
+
+#[test]
+fn the_structured_presentation_flags_reach_the_output() {
+    let indent = |n: &str| {
+        let out = diple()
+            .args(["--structured-indent", n])
+            .arg(fixture("nested.json"))
+            .output()
+            .expect("run");
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(indent("2").contains("\n  name:"), "{}", indent("2"));
+    assert!(indent("6").contains("\n      name:"), "{}", indent("6"));
+
+    // An out-of-range value is a usage error, like every other bad flag.
+    let out = diple()
+        .args(["--structured-indent", "0"])
+        .arg(fixture("nested.json"))
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+/// AC-18 at the command line: no fixture may put an escape on the terminal,
+/// whatever format it is.
+#[test]
+fn no_structured_fixture_leaks_an_escape() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for entry in std::fs::read_dir(dir).expect("fixtures") {
+        let path = entry.expect("entry").path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "json" | "yaml" | "yml") {
+            continue;
+        }
+        let out = diple().arg(&path).output().expect("run");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains('\u{1b}'),
+            "{} leaked an escape sequence",
+            path.display()
+        );
+    }
+}
