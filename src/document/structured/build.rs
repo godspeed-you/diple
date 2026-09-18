@@ -36,6 +36,11 @@ pub struct Builder {
     roots: Vec<StructuredRoot>,
     comments: Vec<Comment>,
     trailing_comments: Vec<CommentId>,
+    /// For each trailing comment, the node it was written after. A comment
+    /// that describes nothing is still text on screen, and search has to be
+    /// able to take the reader to where it is shown; the node before it is the
+    /// nearest thing the viewport can scroll to.
+    trailing_after: Vec<(NodeId, CommentId)>,
     fold_parents: Vec<Option<FoldId>>,
     fold_nodes: Vec<NodeId>,
     /// Open containers, outermost first.
@@ -60,6 +65,7 @@ impl Builder {
             roots: Vec::new(),
             comments: Vec::new(),
             trailing_comments: Vec::new(),
+            trailing_after: Vec::new(),
             fold_parents: Vec::new(),
             fold_nodes: Vec::new(),
             stack: Vec::new(),
@@ -99,7 +105,15 @@ impl Builder {
     }
 
     /// Record a comment that belongs to no node (it follows the last one).
+    ///
+    /// It is still indexed for search, against the node it follows, so that a
+    /// query can find it and land next to where it is rendered. A comment in
+    /// a document with no nodes at all has nowhere to be indexed and is kept
+    /// only as text.
     pub fn trailing_comment(&mut self, id: CommentId) {
+        if let Some(after) = self.nodes.len().checked_sub(1) {
+            self.trailing_after.push((after, id));
+        }
         self.trailing_comments.push(id);
     }
 
@@ -232,7 +246,8 @@ impl Builder {
         // caller's is what keeps the stream index and the relation in step.
         let relation = match parent {
             None => {
-                let (explicit, directives) = self.open_document.take().unwrap_or((false, Vec::new()));
+                let (explicit, directives) =
+                    self.open_document.take().unwrap_or((false, Vec::new()));
                 let document = self.document;
                 self.document += 1;
                 self.roots.push(StructuredRoot {
@@ -308,8 +323,20 @@ impl Builder {
     /// node, which is what lets a match offset stay meaningful.
     fn build_search_index(&self) -> crate::document::search::SearchIndex {
         let mut builder = SearchIndexBuilder::with_capacity(self.nodes.len() * 2);
+        // `trailing_after` is in node order, because a node id is only ever
+        // handed out after the previous one, so one cursor walks it alongside
+        // the nodes instead of rescanning it per node.
+        let mut trailing = self.trailing_after.iter().peekable();
         for node in &self.nodes {
-            let comments = comment_field(node, &self.comments);
+            let mut comments = comment_field(node, &self.comments);
+            while let Some((_, id)) = trailing.next_if(|(after, _)| *after == node.id) {
+                if let Some(comment) = self.comments.get(*id) {
+                    if !comments.is_empty() {
+                        comments.push('\n');
+                    }
+                    comments.push_str(&comment.text);
+                }
+            }
             if !comments.is_empty() {
                 builder.push(node.id, MatchField::Comment, comments);
             }
@@ -454,12 +481,7 @@ mod tests {
         b.open_mapping(any(), SourceSpan::default(), None).unwrap();
         b.open_sequence(key("a"), SourceSpan::default(), None)
             .unwrap();
-        b.scalar(
-            any(),
-            ScalarValue::string("x"),
-            SourceSpan::default(),
-            None,
-        );
+        b.scalar(any(), ScalarValue::string("x"), SourceSpan::default(), None);
         let d = b.finish(SourceDocument::new("t", ""));
         assert_eq!(d.node(0).unwrap().end, 3);
         assert_eq!(d.node(1).unwrap().end, 3);

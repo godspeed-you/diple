@@ -118,6 +118,7 @@ mod tests {
             "SYNOPSIS",
             "DESCRIPTION",
             "OPTIONS",
+            "DOCUMENT FORMATS",
             "KEY BINDINGS",
             "CONFIGURATION",
             "EXIT STATUS",
@@ -148,6 +149,7 @@ mod tests {
             "SYNOPSIS",
             "DESCRIPTION",
             "OPTIONS",
+            "DOCUMENT FORMATS",
             "KEY BINDINGS",
             "CONFIGURATION",
             "EXIT STATUS",
@@ -190,6 +192,53 @@ mod tests {
             body.contains("built\\-in defaults < configuration file"),
             "documents the precedence chain"
         );
+    }
+
+    /// A reader who cannot work out why their YAML opened as Markdown must
+    /// find the answer in the page: which formats exist, how one is chosen,
+    /// and which flag overrules the choice.
+    #[test]
+    fn the_formats_section_explains_detection_and_the_override() {
+        let page = page();
+        let body = page
+            .split(".SH \"DOCUMENT FORMATS\"")
+            .nth(1)
+            .expect("a DOCUMENT FORMATS body");
+        let body = body.split("\n.SH ").next().unwrap_or(body);
+        for needle in [
+            "\\-\\-format",
+            "markdown",
+            "json",
+            "yaml",
+            ".yml",
+            "\\-\\-structured\\-indent",
+            "\\-\\-path",
+            "[structured]",
+        ] {
+            assert!(body.contains(needle), "the formats section omits {needle}");
+        }
+    }
+
+    /// Every configuration key the program accepts must appear in the
+    /// configuration example, or a reader has no way to discover it.
+    #[test]
+    fn the_configuration_example_shows_every_settable_key() {
+        let page = page();
+        let body = page
+            .split(".SH CONFIGURATION")
+            .nth(1)
+            .expect("a CONFIGURATION body");
+        let body = body.split("\n.SH ").next().unwrap_or(body);
+        for setting in crate::config::settings::ALL {
+            // Sections are written as headers, the keys under them unqualified.
+            let key = setting.name.rsplit('.').next().unwrap_or(setting.name);
+            assert!(
+                body.contains(key),
+                "the configuration example omits {}",
+                setting.name
+            );
+        }
+        assert!(body.contains("[structured]"), "the section header");
     }
 
     /// The man page must match the CLI. The options block is generated, but

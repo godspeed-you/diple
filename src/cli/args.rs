@@ -5,21 +5,48 @@ use std::path::PathBuf;
 use clap::Parser;
 use clap_complete::Shell;
 
-use crate::config::schema::{ColorMode, ImageMode, MermaidBackend};
+use crate::config::schema::{ColorMode, FormatMode, ImageMode, MermaidBackend, PathMode};
 
-/// An interactive terminal Markdown reader.
+/// An interactive terminal reader for structured documents.
 #[derive(Debug, Clone, Parser, Default, PartialEq)]
 #[command(
     name = "diple",
     version,
-    about = "An interactive terminal Markdown reader",
-    long_about = "diple is `less` for Markdown: an interactive terminal document viewer \
-                  with semantic navigation, folding, rich tables and Mermaid diagrams. \
+    about = "An interactive terminal reader for structured documents",
+    long_about = "diple is `less` for structured documents: an interactive terminal viewer \
+                  for Markdown, JSON and YAML, with semantic navigation, folding, search \
+                  and outlines over the document's own structure rather than its text. \
                   If FILE is omitted, diple reads from stdin."
 )]
 pub struct CliArgs {
-    /// Markdown file to read (stdin when omitted).
+    /// Document to read (stdin when omitted).
     pub file: Option<PathBuf>,
+
+    // Document
+    /// How to read the document; auto detects from the name and content.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "FORMAT",
+        help_heading = "Document options"
+    )]
+    pub format: Option<FormatMode>,
+    /// Columns one JSON/YAML nesting level is indented by.
+    #[arg(
+        long,
+        value_name = "COLUMNS",
+        value_parser = clap::value_parser!(u8).range(1..=16),
+        help_heading = "Document options"
+    )]
+    pub structured_indent: Option<u8>,
+    /// Show the path of the selected JSON/YAML node.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "WHEN",
+        help_heading = "Document options"
+    )]
+    pub path: Option<PathMode>,
 
     // Appearance
     /// Colour theme.
@@ -256,6 +283,52 @@ mod tests {
         assert!(r.is_err());
         let r = CliArgs::try_parse_from(["diple", "--color", "sometimes"]);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn document_flags_parse() {
+        let a = parse(&[
+            "--format",
+            "yaml",
+            "--structured-indent",
+            "4",
+            "--path",
+            "always",
+            "deployment.yaml",
+        ]);
+        assert_eq!(a.format, Some(FormatMode::Yaml));
+        assert_eq!(a.structured_indent, Some(4));
+        assert_eq!(a.path, Some(PathMode::Always));
+
+        let a = parse(&[]);
+        assert_eq!(a.format, None, "no flag leaves the configured default");
+        assert_eq!(a.structured_indent, None);
+        assert_eq!(a.path, None);
+
+        for value in ["auto", "markdown", "json", "yaml"] {
+            assert!(CliArgs::try_parse_from(["diple", "--format", value]).is_ok());
+        }
+    }
+
+    /// A misspelled value must say what would have been accepted rather than
+    /// quietly reading the document as something else.
+    #[test]
+    fn invalid_document_flag_values_are_refused_with_the_alternatives() {
+        let error = CliArgs::try_parse_from(["diple", "--format", "toml"]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("toml"), "{message}");
+        assert!(message.contains("markdown"), "{message}");
+        assert!(message.contains("json"), "{message}");
+
+        let error = CliArgs::try_parse_from(["diple", "--path", "maybe"]).unwrap_err();
+        assert!(error.to_string().contains("never"), "{error}");
+
+        // An indent of zero has no hierarchy left to show, and one screen
+        // wide is not an indent either.
+        assert!(CliArgs::try_parse_from(["diple", "--structured-indent", "0"]).is_err());
+        assert!(CliArgs::try_parse_from(["diple", "--structured-indent", "40"]).is_err());
+        assert!(CliArgs::try_parse_from(["diple", "--structured-indent", "wide"]).is_err());
+        assert!(CliArgs::try_parse_from(["diple", "--structured-indent", "1"]).is_ok());
     }
 
     #[test]

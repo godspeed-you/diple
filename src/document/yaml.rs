@@ -34,7 +34,10 @@
 //! `%TAG` and `%YAML` directives, which are likewise only visible at the token
 //! level.
 
-use granit_parser::{Event, Marker, Parser, ScalarStyle as YamlStyle, Scanner, StrInput, TokenType};
+use granit_parser::{
+    ErrorKind, Event, Marker, Options, Parser, ScalarStyle as YamlStyle, Scanner, StrInput,
+    TokenType,
+};
 
 use super::error::DocumentError;
 use super::format::DocumentKind;
@@ -50,6 +53,25 @@ use super::NodeId;
 pub fn parse(source: &SourceDocument) -> Result<StructuredDocument, DocumentError> {
     let prelude = Prelude::scan(source.text())?;
     Loader::new(source, prelude).run()
+}
+
+/// The parser settings a reader needs.
+///
+/// granit defaults its nesting limits to 255, which is a sensible ceiling for
+/// a deserializer but not the one diple promises: [`MAX_DEPTH`] is the single
+/// place where "too deep to be worth showing" is decided, and the JSON backend
+/// already answers to it. Raising granit's limits to the same number makes the
+/// two backends refuse the same documents, and [`Loader::scan_error`] then
+/// gives granit's depth refusal the same wording as diple's own.
+///
+/// Comment emission is granit's default, but it is stated here because
+/// everything in this module exists to keep comments.
+fn parser_options() -> Options {
+    granit_parser::options! {
+        emit_comments: true,
+        flow_nesting_limit: MAX_DEPTH,
+        block_nesting_limit: MAX_DEPTH,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +91,7 @@ struct Prelude {
 impl Prelude {
     fn scan(text: &str) -> Result<Prelude, DocumentError> {
         let mut prelude = Prelude::default();
-        for token in Scanner::new(StrInput::new(text)) {
+        for token in Scanner::with_options(StrInput::new(text), parser_options()) {
             // A scan error here is reported by the event pass, with the
             // position and message the reader should see; this pass only
             // gathers what it can.
@@ -131,6 +153,15 @@ enum Expect {
     Value,
 }
 
+/// What kind of row the node being created will render as. Only comment
+/// attachment cares, and only because a block collection shares its first
+/// line with its first entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Leaf,
+    Container,
+}
+
 /// One open container.
 #[derive(Debug)]
 struct Frame {
@@ -147,8 +178,10 @@ struct Loader<'a> {
     prelude: Prelude,
     builder: Builder,
     frames: Vec<Frame>,
-    /// Comments written above the node that is about to be created.
-    pending_above: Vec<usize>,
+    /// Comments written above the node that is about to be created, each with
+    /// the byte offset it was written at — deciding which node a comment
+    /// describes needs to know whether it stands above a row or inside it.
+    pending_above: Vec<(usize, usize)>,
     /// A same-line comment that belongs to the entry currently being read —
     /// `metadata: # note` arrives before the mapping the note describes.
     pending_right: Option<usize>,
@@ -178,7 +211,7 @@ impl<'a> Loader<'a> {
     }
 
     fn run(mut self) -> Result<StructuredDocument, DocumentError> {
-        for next in Parser::new_from_str(self.text) {
+        for next in Parser::new_from_str_with_options(self.text, parser_options()) {
             let (event, span) = match next {
                 Ok(pair) => pair,
                 Err(error) => return Err(self.scan_error(&error)),
@@ -227,8 +260,8 @@ impl<'a> Loader<'a> {
                     if self.expecting_key() {
                         self.set_scalar_key(scalar, anchor, range);
                     } else {
+                        let meta = self.take_meta(anchor, tag.as_deref(), Row::Leaf);
                         let relation = self.take_relation();
-                        let meta = self.take_meta(anchor, tag.as_deref());
                         let id = self.builder.scalar(relation, scalar, range, meta);
                         self.node_created(id);
                         self.value_completed();
@@ -247,8 +280,8 @@ impl<'a> Loader<'a> {
                             complex: false,
                         });
                     } else {
+                        let meta = self.take_meta(0, None, Row::Leaf);
                         let relation = self.take_relation();
-                        let meta = self.take_meta(0, None);
                         let id = self.builder.alias(relation, name, range, meta);
                         self.node_created(id);
                         self.value_completed();
@@ -259,8 +292,8 @@ impl<'a> Loader<'a> {
                         self.complex_key = Some((1, start));
                         continue;
                     }
+                    let meta = self.take_meta(anchor, tag.as_deref(), Row::Container);
                     let relation = self.take_relation();
-                    let meta = self.take_meta(anchor, tag.as_deref());
                     let id = self
                         .builder
                         .open_mapping(relation, range, meta)
@@ -279,8 +312,8 @@ impl<'a> Loader<'a> {
                         self.complex_key = Some((1, start));
                         continue;
                     }
+                    let meta = self.take_meta(anchor, tag.as_deref(), Row::Container);
                     let relation = self.take_relation();
-                    let meta = self.take_meta(anchor, tag.as_deref());
                     let id = self
                         .builder
                         .open_sequence(relation, range, meta)
@@ -391,20 +424,73 @@ impl<'a> Loader<'a> {
     }
 
     /// Collect the metadata the node about to be created carries.
-    fn take_meta(&mut self, anchor: usize, tag: Option<&granit_parser::Tag>) -> Option<NodeMeta> {
+    ///
+    /// Must be called before [`Loader::take_relation`], which consumes the
+    /// pending key that says whether this entry is a merge key.
+    fn take_meta(
+        &mut self,
+        anchor: usize,
+        tag: Option<&granit_parser::Tag>,
+        row: Row,
+    ) -> Option<NodeMeta> {
         let merge_key = self
             .frames
             .last()
             .and_then(|f| f.pending_key.as_ref())
             .is_some_and(|k| k.text == "<<");
+        let above = if self.claims_comments_above(row) {
+            std::mem::take(&mut self.pending_above)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let meta = NodeMeta {
             anchor: self.prelude.anchor(anchor).map(str::to_string),
             tag: tag.map(tag_text),
-            above: std::mem::take(&mut self.pending_above),
+            above,
             right: self.pending_right.take(),
             merge_key,
         };
         (!meta.is_empty()).then_some(meta)
+    }
+
+    /// Whether the node about to be created is the one the pending own-line
+    /// comments describe.
+    ///
+    /// A block collection begins where its first entry begins, so the naive
+    /// answer — "the next node built" — hands
+    ///
+    /// ```yaml
+    /// # Production replicas.
+    /// replicas: 3
+    /// ```
+    ///
+    /// to the enclosing mapping instead of to `replicas`, which puts the
+    /// comment on a row the reader is not looking at and collapses it with the
+    /// wrong subtree. A comment belongs to the row it stands above:
+    ///
+    /// * a leaf always takes it — the leaf *is* a row;
+    /// * a document root never takes it. A root is the document, not a row
+    ///   within it, so the comment passes down to the first entry;
+    /// * a keyed container takes it only if the comment was written above the
+    ///   key that names it. A comment written *after* that key, as in
+    ///   `foo:` / `# why` / `bar: 1`, stands above `bar` and waits for it.
+    ///
+    /// A container that is a sequence item has no key, but its `- ` does start
+    /// a row of its own, so it takes the comment.
+    fn claims_comments_above(&self, row: Row) -> bool {
+        if row == Row::Leaf {
+            return true;
+        }
+        let Some(frame) = self.frames.last() else {
+            return false;
+        };
+        match (&frame.pending_key, self.pending_above.first()) {
+            (Some(key), Some((_, at))) => *at < key.span.start,
+            _ => true,
+        }
     }
 
     fn comment(&mut self, text: &str, span: SourceSpan, placement: granit_parser::Placement) {
@@ -424,21 +510,21 @@ impl<'a> Loader<'a> {
                 } else if let Some(node) = self.last_node {
                     self.builder.attach_meta(node, |m| m.right = Some(id));
                 } else {
-                    self.pending_above.push(id);
+                    self.pending_above.push((id, span.start));
                 }
             }
             Placement::Last => self.builder.trailing_comment(id),
             // An own-line comment describes what follows it, so it waits for
             // the next node and then collapses and moves with it. That is
             // also the safe default for a placement granit adds later.
-            Placement::Above | Placement::Free | _ => self.pending_above.push(id),
+            Placement::Above | Placement::Free | _ => self.pending_above.push((id, span.start)),
         }
     }
 
     /// Comments that never found a node to describe stay in the document as
     /// trailing text rather than disappearing.
     fn flush_free_comments(&mut self) {
-        for id in std::mem::take(&mut self.pending_above) {
+        for (id, _) in std::mem::take(&mut self.pending_above) {
             self.builder.trailing_comment(id);
         }
         if let Some(id) = self.pending_right.take() {
@@ -474,7 +560,7 @@ impl<'a> Loader<'a> {
             };
         }
         let kind = tag
-            .and_then(|t| core_schema_kind(t))
+            .and_then(core_schema_kind)
             .unwrap_or_else(|| resolve_kind(value, style));
         ScalarValue {
             text: value.to_string(),
@@ -486,8 +572,16 @@ impl<'a> Loader<'a> {
 
     // ---- errors ----------------------------------------------------------
 
+    /// A parser failure, in diple's words.
+    ///
+    /// granit's own depth refusal is reworded: "recursion limit exceeded" is
+    /// about granit's internals, and a reader hitting it has hit exactly the
+    /// same wall the JSON backend describes as nesting past [`MAX_DEPTH`].
     fn scan_error(&self, error: &granit_parser::ScanError) -> DocumentError {
         let marker = error.marker();
+        if matches!(error.kind(), ErrorKind::RecursionLimitExceeded) {
+            return self.depth_error(marker);
+        }
         DocumentError::at_line_col(
             self.source,
             DocumentKind::Yaml,
@@ -544,9 +638,7 @@ fn resolve_kind(value: &str, style: ScalarStyle) -> ScalarKind {
 }
 
 fn is_yaml_number(value: &str) -> bool {
-    let body = value
-        .strip_prefix(['-', '+'])
-        .unwrap_or(value);
+    let body = value.strip_prefix(['-', '+']).unwrap_or(value);
     if body.is_empty() {
         return false;
     }
@@ -572,10 +664,12 @@ fn is_yaml_number(value: &str) -> bool {
         None => (mantissa, None),
     };
     let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
-    if !digits(int) || !frac.is_none_or(digits) {
+    // `Option::is_none_or` would read better but arrived in Rust 1.82;
+    // diple's MSRV is 1.81, set by `granit-parser` alone.
+    if !digits(int) || matches!(frac, Some(f) if !digits(f)) {
         return false;
     }
-    if int.is_empty() && frac.is_none_or(str::is_empty) {
+    if int.is_empty() && !matches!(frac, Some(f) if !f.is_empty()) {
         return false;
     }
     match exponent {
@@ -647,9 +741,8 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
     }
     // A mapping with at least two entries at the top level.
     doc.roots().iter().any(|root| {
-        doc.node(root.node).is_some_and(|n| {
-            matches!(n.kind, StructuredNodeKind::Mapping) && n.child_count >= 2
-        })
+        doc.node(root.node)
+            .is_some_and(|n| matches!(n.kind, StructuredNodeKind::Mapping) && n.child_count >= 2)
     })
 }
 
@@ -683,7 +776,9 @@ mod tests {
 
     #[test]
     fn mappings_and_sequences_build_the_expected_tree() {
-        let d = doc("metadata:\n  name: nginx\n  labels:\n    app: frontend\nports:\n  - 80\n  - 443\n");
+        let d = doc(
+            "metadata:\n  name: nginx\n  labels:\n    app: frontend\nports:\n  - 80\n  - 443\n",
+        );
         assert_eq!(
             shape(&d),
             [
@@ -732,7 +827,7 @@ mod tests {
         let d = doc(
             "a: 3\nb: 3.5\nc: -2\nd: 1e6\ne: true\nf: False\ng: null\nh: ~\ni: text\nj: \"3\"\nk: '3'\nl: 0x1f\nm: .inf\nn: 2026-08-31\n",
         );
-        let kinds: Vec<(String, ScalarKind)> = d
+        let kinds: Vec<(std::string::String, ScalarKind)> = d
             .children(0)
             .into_iter()
             .filter_map(|id| Some((d.label(id), d.node(id)?.scalar()?.kind)))
@@ -844,6 +939,47 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_above_a_keyed_container_belongs_to_the_container() {
+        let d = doc("# The ports the pod listens on.\nports:\n  - 80\n");
+        let ports = d.node(1).unwrap();
+        assert_eq!(d.label(1), "ports");
+        assert_eq!(
+            d.comment(ports.comments_above()[0]).unwrap().text,
+            " The ports the pod listens on."
+        );
+    }
+
+    #[test]
+    fn a_comment_below_a_key_belongs_to_the_entry_it_stands_above() {
+        // The mapping `metadata` opens where `name` opens, so the naive
+        // answer would hang this comment off `metadata` — a row above the
+        // comment's own line.
+        let d = doc("metadata:\n  # Chosen by the release tooling.\n  name: nginx\n");
+        assert!(d.node(1).unwrap().comments_above().is_empty());
+        let name = d.node(2).unwrap();
+        assert_eq!(d.label(2), "name");
+        assert_eq!(
+            d.comment(name.comments_above()[0]).unwrap().text,
+            " Chosen by the release tooling."
+        );
+    }
+
+    #[test]
+    fn a_comment_collapses_with_the_subtree_it_belongs_to() {
+        let d = doc("spec:\n  # How many of these to run.\n  replicas: 3\nother: 1\n");
+        let spec = d.node(1).unwrap();
+        let owner = d
+            .nodes()
+            .iter()
+            .find(|n| !n.comments_above().is_empty())
+            .expect("a node owning the comment");
+        // Inside `spec`'s subtree, so collapsing `spec` hides the comment with
+        // the entry it describes rather than leaving it stranded.
+        assert!((spec.id..spec.end).contains(&owner.id));
+        assert!(d.trailing_comments().is_empty());
+    }
+
+    #[test]
     fn a_comment_with_nothing_after_it_is_still_kept() {
         let d = doc("a: 1\n# trailing thought\n");
         assert_eq!(d.trailing_comments().len(), 1);
@@ -873,6 +1009,51 @@ mod tests {
         // The alias is searchable by name.
         let anchors = d.search_index().find("defaults", false);
         assert!(anchors.iter().any(|m| m.field == MatchField::Anchor));
+    }
+
+    #[test]
+    fn a_merge_key_is_shown_rather_than_performed() {
+        let d = doc("defaults: &defaults\n  retries: 3\n  timeout: 5\nservice:\n  <<: *defaults\n  name: web\n");
+        let service = d
+            .nodes()
+            .iter()
+            .find(|n| d.label(n.id) == "service")
+            .expect("the service mapping");
+        // Exactly what the author wrote: the merge entry and `name`. Nothing
+        // from `defaults` has been materialised into it.
+        let keys: Vec<String> = d
+            .children(service.id)
+            .into_iter()
+            .map(|id| d.label(id))
+            .collect();
+        assert_eq!(keys, ["<<", "name"]);
+        assert_eq!(service.end - service.id, 3, "no merged subtree");
+        assert!(d
+            .children(service.id)
+            .into_iter()
+            .all(|id| d.node(id).is_some_and(|n| n.child_count == 0)));
+    }
+
+    #[test]
+    fn an_alias_to_a_container_stays_a_single_node() {
+        let d = doc("anchor: &big\n  a: 1\n  b: 2\ncopy: *big\n");
+        let copy = d
+            .nodes()
+            .iter()
+            .find(|n| d.label(n.id) == "copy")
+            .expect("the alias entry");
+        assert_eq!(
+            copy.kind,
+            StructuredNodeKind::Alias {
+                name: "big".to_string()
+            }
+        );
+        assert_eq!(copy.child_count, 0);
+        assert_eq!(copy.end, copy.id + 1, "the alias has no subtree");
+        assert!(!copy.is_merge_key());
+        // The anchored entries exist once each, under the anchor.
+        assert_eq!(d.node_count(), 5);
+        assert_eq!(d.nodes().iter().filter(|n| d.label(n.id) == "b").count(), 1);
     }
 
     #[test]
@@ -907,8 +1088,22 @@ mod tests {
             ]
         );
         // An explicit `!!str` overrules the core-schema resolution.
-        assert_eq!(d.node(4).unwrap().scalar().unwrap().kind, ScalarKind::String);
+        assert_eq!(
+            d.node(4).unwrap().scalar().unwrap().kind,
+            ScalarKind::String
+        );
         assert_eq!(d.search_index().find("MyType", false).len(), 1);
+    }
+
+    #[test]
+    fn a_tag_is_searchable_as_the_tag_of_its_node() {
+        let d = doc("date: !!timestamp 2026-08-31\ncustom: !MyType value\n");
+        for (needle, label) in [("!!timestamp", "date"), ("!MyType", "custom")] {
+            let hits = d.search_index().find(needle, false);
+            assert_eq!(hits.len(), 1, "{needle}");
+            assert_eq!(hits[0].field, MatchField::Tag, "{needle}");
+            assert_eq!(d.label(hits[0].node), label, "{needle}");
+        }
     }
 
     #[test]
@@ -936,7 +1131,9 @@ mod tests {
 
     #[test]
     fn every_document_of_a_stream_is_a_root() {
-        let d = doc("---\nkind: ConfigMap\ndata:\n  a: 1\n---\nkind: Deployment\nspec:\n  replicas: 3\n");
+        let d = doc(
+            "---\nkind: ConfigMap\ndata:\n  a: 1\n---\nkind: Deployment\nspec:\n  replicas: 3\n",
+        );
         assert_eq!(d.roots().len(), 2);
         assert!(d.roots().iter().all(|r| r.explicit));
         assert_eq!(d.label(d.roots()[0].node), "Document 1");
@@ -953,12 +1150,7 @@ mod tests {
         let d = doc("locations:\n  [47.3769, 8.5417]: local\n  [40.7128, -74.0060]: remote\n");
         let keys: Vec<String> = d.children(1).into_iter().map(|id| d.label(id)).collect();
         assert_eq!(keys, ["[47.3769, 8.5417]", "[40.7128, -74.0060]"]);
-        assert!(d
-            .node(2)
-            .unwrap()
-            .key()
-            .expect("a key")
-            .complex);
+        assert!(d.node(2).unwrap().key().expect("a key").complex);
         assert_eq!(d.node(2).unwrap().scalar().unwrap().text, "local");
     }
 
@@ -998,9 +1190,23 @@ mod tests {
 
     #[test]
     fn deep_nesting_is_an_error_rather_than_a_crash() {
-        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 10), "]".repeat(MAX_DEPTH + 10));
+        let deep = format!(
+            "{}{}",
+            "[".repeat(MAX_DEPTH + 10),
+            "]".repeat(MAX_DEPTH + 10)
+        );
         let error = err(&deep);
         assert!(error.message.contains("nested more than"), "{error}");
+        assert!(error.position.is_some(), "{error}");
+        // Block nesting is refused the same way, and so is a mapping.
+        let blocks: String = (0..MAX_DEPTH + 10)
+            .map(|n| format!("{}a:\n", "  ".repeat(n)))
+            .collect();
+        assert!(err(&blocks).message.contains("nested more than"));
+        // And the limit is diple's, not the parser's default: a document at
+        // exactly the limit still reads, as it does in JSON.
+        let ok = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert_eq!(doc(&ok).node_count(), MAX_DEPTH);
     }
 
     #[test]
@@ -1031,7 +1237,9 @@ mod tests {
 
     #[test]
     fn structured_configuration_is_recognised() {
-        assert!(confident("metadata:\n  name: nginx\nspec:\n  replicas: 3\n"));
+        assert!(confident(
+            "metadata:\n  name: nginx\nspec:\n  replicas: 3\n"
+        ));
         assert!(confident("apiVersion: apps/v1\nkind: Deployment\n"));
         assert!(confident("a: &x 1\nb: *x\n"));
         assert!(confident("---\na: 1\n---\nb: 2\n"));

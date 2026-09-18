@@ -204,9 +204,7 @@ mod tests {
         ]);
         let hits = idx.find("image", false);
         assert_eq!(
-            hits.iter()
-                .map(|m| (m.node, m.field))
-                .collect::<Vec<_>>(),
+            hits.iter().map(|m| (m.node, m.field)).collect::<Vec<_>>(),
             [
                 (0, MatchField::Label),
                 (0, MatchField::Value),

@@ -21,9 +21,9 @@ use super::ast::{
     List, ListItem, MermaidBlock, Node, NodeId, NodeKind, SourceSpan, Table,
 };
 use super::links::Link;
+use super::sections;
 use crate::document::search::SearchIndex;
 use crate::document::source::SourceDocument;
-use super::sections;
 
 /// Parser options used by diple.
 pub fn options() -> Options {

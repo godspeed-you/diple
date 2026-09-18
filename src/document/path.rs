@@ -182,7 +182,10 @@ mod tests {
         let p = path();
         assert_eq!(p.breadcrumb_within(80, false), p.breadcrumb(false));
         let narrow = p.breadcrumb_within(20, false);
-        assert!(narrow.ends_with("image"), "the selected node survives: {narrow}");
+        assert!(
+            narrow.ends_with("image"),
+            "the selected node survives: {narrow}"
+        );
         assert!(narrow.starts_with("..."), "{narrow}");
         assert!(crate::util::unicode::width(&narrow) <= 20);
         // Not even one segment fits.

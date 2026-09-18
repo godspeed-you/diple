@@ -9,7 +9,7 @@
 use std::path::Path;
 
 /// A document format diple can read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum DocumentKind {
     /// CommonMark with GitHub extensions.
     #[default]

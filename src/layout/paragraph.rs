@@ -193,7 +193,7 @@ pub(crate) fn quote_gutter(theme: &Theme, unicode_box: bool) -> StyledSpan {
 mod tests {
     use super::*;
     use crate::document::markdown::{parse, NodeKind};
-    use crate::document::FoldState;
+    use crate::document::DocumentModel;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::primitives::{LineKind, RenderTree};
 
@@ -210,7 +210,7 @@ mod tests {
     }
 
     fn render_with(src: &str, width: usize, unicode_box: bool) -> String {
-        let doc = parse(src);
+        let doc = DocumentModel::markdown(parse(src));
         let theme = Theme::dark();
         let mut opts = LayoutOptions::new(width, &theme);
         opts.unicode = unicode_box;
@@ -225,9 +225,9 @@ mod tests {
         unicode_box: bool,
         collapse: Option<usize>,
     ) -> String {
-        let doc = parse(src);
+        let doc = DocumentModel::markdown(parse(src));
         let theme = Theme::dark();
-        let mut folds = FoldState::new(&doc);
+        let mut folds = doc.fold_state();
         if let Some(section) = collapse {
             folds.collapse(section);
         }
@@ -236,7 +236,7 @@ mod tests {
         Layout::build(&doc, &opts).to_plain_text()
     }
 
-    fn tree_of(doc: &crate::document::Document, theme: &Theme, width: usize) -> RenderTree {
+    fn tree_of(doc: &DocumentModel, theme: &Theme, width: usize) -> RenderTree {
         Layout::build(doc, &LayoutOptions::new(width, theme))
     }
 
@@ -269,7 +269,7 @@ mod tests {
 
         // Belt and braces: no line the layout attributes to a heading may
         // start with `#`, at any width, under either box-drawing mode.
-        let doc = parse(src);
+        let doc = DocumentModel::markdown(parse(src));
         let theme = Theme::dark();
         for width in [4usize, 12, 40, 120] {
             for unicode_box in [true, false] {
@@ -289,7 +289,7 @@ mod tests {
 
         // The per-level style is what distinguishes H3..H6 once the hashes
         // are gone, so it is asserted directly (and only it).
-        let doc = parse("### Deep\n");
+        let doc = DocumentModel::markdown(parse("### Deep\n"));
         let theme = Theme::dark();
         let tree = tree_of(&doc, &theme, 40);
         let heading = tree.lines.first().expect("the heading line");

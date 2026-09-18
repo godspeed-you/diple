@@ -19,6 +19,74 @@
 //! literal backslash occurs outside a roff escape, and every literal hyphen is
 //! written `\-` so that it is not typeset as a hyphenation point.
 
+/// `.SH "DOCUMENT FORMATS"` — what diple reads, how it decides which format
+/// a document is, and what it does when the document does not parse.
+///
+/// Derived from `src/document/format.rs` and `src/document/load.rs`; the
+/// presentation keys it names are the `[structured]` section of
+/// `src/config/schema.rs`.
+pub const DOCUMENT_FORMATS: &str = r#".SH "DOCUMENT FORMATS"
+diple reads Markdown, JSON and YAML as documents rather than as coloured
+text: folding, navigation, search and the outline operate on semantic nodes,
+so a JSON object folds as an object and a YAML mapping entry is one unit.
+.PP
+The format is decided in this order, and the first entry that applies wins:
+.TP
+.BI \-\-format " FORMAT"
+.BR auto ", " markdown ", " json " or " yaml .
+An explicit format is final: it beats the file name and the content alike, so
+.B diple \-\-format markdown config.yaml
+reads a YAML file as prose and
+.B diple \-\-format json file.data
+insists on JSON.
+.TP
+.B The file name
+.BR .md ", " .markdown ", " .mdown " and " .mkd
+are Markdown,
+.B .json
+is JSON, and
+.BR .yaml " and " .yml
+are YAML. JSON with comments is not a format diple reads, so
+.B .jsonc
+is deliberately not recognised; pass
+.B \-\-format json
+for a file that is strict JSON under another name.
+.TP
+.B The content
+Only a confident guess is taken: a document opening with
+.BR { " or " [
+that parses as strict JSON, or a YAML stream whose roots are all non\-empty
+collections. This is what makes
+.B kubectl get deployment nginx \-o yaml | diple
+open as YAML with nothing to configure.
+.TP
+.B Markdown
+The fallback. Prose, Markdown lists and anything else ambiguous stay
+Markdown, because a reader's prose must never be claimed by a permissive
+parser.
+.PP
+The format
+.I stated
+by
+.B \-\-format
+or by the file name is binding: a
+.B config.yaml
+that does not parse is reported as a YAML error naming the line, the column
+and the offending source, and diple exits non\-zero rather than opening the
+file as Markdown and looking almost right. A format only
+.I guessed
+from content falls back to Markdown instead, since nothing had claimed it.
+.PP
+JSON and YAML presentation is controlled by
+.BR \-\-structured\-indent ", " \-\-path
+and the
+.B [structured]
+section of the configuration file. When standard output is not a terminal the
+document is written as plain text, fully expanded and in source order, so
+.B diple response.json | head \-20
+is readable and reproducible.
+"#;
+
 /// `.SH "KEY BINDINGS"` — the default bindings, grouped as in
 /// `docs/keybindings.md`.
 pub const KEY_BINDINGS: &str = r#".SH "KEY BINDINGS"
@@ -83,23 +151,32 @@ Previous match (\fBprevious_search\fR).
 Search runs over the document content, not over rendered terminal lines.
 Jumping to a match inside a collapsed section expands that section
 automatically.
-.SS "Heading navigation"
+.SS "Structure navigation"
 .TP
 .B ]
-Next heading (\fBnext_heading\fR).
+Next structural node (\fBnext_heading\fR): a Markdown heading, a JSON or YAML
+container.
 .TP
 .B [
-Previous heading (\fBprevious_heading\fR).
+Previous structural node (\fBprevious_heading\fR). From a body row this goes
+to the node you are inside.
 .TP
 .B }
-Next heading at the same or a higher level (\fBnext_heading_same_level\fR).
+Next sibling at the same or a higher level (\fBnext_heading_same_level\fR).
 .TP
 .B {
-Previous heading at the same or a higher level
+Previous sibling at the same or a higher level
 (\fBprevious_heading_same_level\fR).
+.TP
+.B H
+The node that contains this one (\fBparent_node\fR).
+.TP
+.B L
+The first node inside this one (\fBfirst_child\fR).
 .PP
-Heading jumps are semantic: they target the heading node, not a line number,
-and they stay correct across a terminal resize.
+The action names keep their 1.x spelling so existing \fB[keys]\fR files go on
+working. Structural jumps are semantic: they target the node, not a line
+number, and they stay correct across a terminal resize.
 .SS Folding
 .TP
 .B Enter
@@ -300,6 +377,7 @@ or
 .SS "Complete example, showing every default"
 .RS 4
 .EX
+format = "auto"         # auto | markdown | json | yaml; see DOCUMENT FORMATS
 theme = "auto"          # auto | dark | light | crt | cyberpunk
 color = "auto"          # auto | always | never
 mouse = true            # enable mouse reporting where supported
@@ -328,6 +406,12 @@ backend = "auto"        # auto | terminal | mmdc | source
 images = "auto"         # auto | always | never; image protocol usage
 mmdc_command = "mmdc"   # Mermaid CLI executable
 
+[structured]            # JSON and YAML only; Markdown ignores this section
+indent = 2              # columns per nesting level; must be >= 1
+path = "auto"           # auto | always | never; path of the selected node
+show_indices = true     # number sequence items as [0], [1], [2]
+collapsed_summary = true # say what a collapsed container holds
+
 [keys]
 # Overrides only; every unlisted action keeps its default binding.
 # A [keys] entry replaces all default bindings for that action; use a
@@ -336,6 +420,8 @@ quit = ["q", "ctrl\-q"]
 search = "/"
 next_heading = "]"
 previous_heading = "["
+parent_node = "H"
+first_child = "L"
 toggle_toc = "t"
 toggle_key_hints = "K"
 toggle_fold = "za"
@@ -572,10 +658,36 @@ installed by other means may place them elsewhere.
 
 /// `.SH EXAMPLES` — every command here was run against the program.
 pub const EXAMPLES: &str = r#".SH EXAMPLES
-Read a file interactively:
+Read a file interactively. The format follows the name:
 .RS 4
 .EX
 diple README.md
+diple deployment.yaml
+diple response.json
+.EE
+.RE
+.PP
+Read structured output straight from the command that produced it:
+.RS 4
+.EX
+kubectl get deployment nginx \-o yaml | diple
+curl \-s https://api.example.com/state | diple
+.EE
+.RE
+.PP
+Say what a document is when its name does not, or when the name lies:
+.RS 4
+.EX
+diple \-\-format yaml \-
+diple \-\-format json file.data
+diple \-\-format markdown config.yaml
+.EE
+.RE
+.PP
+Widen the nesting indent and pin the path of the selected node on screen:
+.RS 4
+.EX
+diple \-\-structured\-indent 4 \-\-path always deployment.yaml
 .EE
 .RE
 .PP
@@ -696,6 +808,7 @@ under
 /// Used by the regression tests that guard against the page silently
 /// collapsing back to a bare clap dump.
 pub const SECTION_TITLES: &[&str] = &[
+    "DOCUMENT FORMATS",
     "KEY BINDINGS",
     "CONFIGURATION",
     "EXIT STATUS",
@@ -709,6 +822,7 @@ pub const SECTION_TITLES: &[&str] = &[
 pub fn sections() -> Vec<std::borrow::Cow<'static, str>> {
     use std::borrow::Cow;
     vec![
+        Cow::Borrowed(DOCUMENT_FORMATS),
         Cow::Borrowed(KEY_BINDINGS),
         Cow::Borrowed(CONFIGURATION),
         Cow::Borrowed(EXIT_STATUS),

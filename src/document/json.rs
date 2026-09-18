@@ -415,8 +415,7 @@ impl<'a> Parser<'a> {
                 self.pos += 2;
                 let second = self.hex4(at)?;
                 if (0xdc00..0xe000).contains(&second) {
-                    let combined =
-                        0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
+                    let combined = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
                     out.push(char::from_u32(combined).unwrap_or(char::REPLACEMENT_CHARACTER));
                     return Ok(());
                 }
@@ -478,11 +477,11 @@ mod tests {
     use crate::document::structured::StructuredNodeKind;
 
     fn doc(src: &str) -> StructuredDocument {
-        parse(SourceDocument::new("t.json", src)).expect(src)
+        parse(&SourceDocument::new("t.json", src)).expect(src)
     }
 
     fn err(src: &str) -> DocumentError {
-        parse(SourceDocument::new("t.json", src)).expect_err(src)
+        parse(&SourceDocument::new("t.json", src)).expect_err(src)
     }
 
     /// The document as `depth:label kind value` lines — a compact way to
@@ -538,10 +537,7 @@ mod tests {
         // part of the document a reader opened diple to look at.
         let d = doc(r#"{"x":1,"x":2}"#);
         assert_eq!(d.children(0).len(), 2);
-        assert_eq!(
-            shape(&d),
-            ["root {}", "  x Number 1", "  x Number 2"]
-        );
+        assert_eq!(shape(&d), ["root {}", "  x Number 1", "  x Number 2"]);
         // The human path is the same for both; the node id is what tells them
         // apart, and the canonical path is what a reader can copy.
         assert_eq!(d.path(1).breadcrumb(false), "x");
@@ -559,7 +555,14 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            ["1", "1.0", "1e6", "-0", "2.5E-3", "1234567890123456789012345"]
+            [
+                "1",
+                "1.0",
+                "1e6",
+                "-0",
+                "2.5E-3",
+                "1234567890123456789012345"
+            ]
         );
     }
 
@@ -602,7 +605,8 @@ mod tests {
         let d = doc(r#"{"キー":"値 🎵","ü":["ß"]}"#);
         assert_eq!(d.label(1), "キー");
         assert_eq!(d.node(1).unwrap().scalar().unwrap().text, "値 🎵");
-        assert_eq!(d.path(4).breadcrumb(false), "ü > [0]");
+        let item = d.first_child(2).expect("the array's first item");
+        assert_eq!(d.path(item).breadcrumb(false), "ü > [0]");
     }
 
     #[test]
@@ -627,12 +631,16 @@ mod tests {
 
     #[test]
     fn deep_nesting_is_an_error_rather_than_a_crash() {
-        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 10), "]".repeat(MAX_DEPTH + 10));
+        let deep = format!(
+            "{}{}",
+            "[".repeat(MAX_DEPTH + 10),
+            "]".repeat(MAX_DEPTH + 10)
+        );
         let error = err(&deep);
         assert!(error.message.contains("nested more than"), "{error}");
         // Just inside the limit still parses.
         let ok = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
-        assert!(parse(SourceDocument::new("t.json", &ok)).is_ok());
+        assert!(parse(&SourceDocument::new("t.json", &ok)).is_ok());
     }
 
     #[test]

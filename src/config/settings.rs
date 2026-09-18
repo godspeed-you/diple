@@ -10,7 +10,9 @@
 //! section: `center`, `table.mode`, `code.tab_width`. Sections themselves are
 //! not settable — there is nothing to assign to a table of keys.
 
-use super::schema::{ColorMode, Config, ImageMode, MermaidBackend, Osc8Mode, TableMode, Theme};
+use super::schema::{
+    ColorMode, Config, FormatMode, ImageMode, MermaidBackend, Osc8Mode, PathMode, TableMode, Theme,
+};
 
 /// What a setting accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +95,12 @@ const BOOL: Kind = Kind::Bool;
 /// Every settable key, in help-display order: the top-level keys first, then
 /// the sections, each in the order the configuration file writes them.
 pub const ALL: &[Setting] = &[
+    Setting {
+        name: "format",
+        kind: Kind::Choice(&["auto", "markdown", "json", "yaml"]),
+        default: "auto",
+        help: "how a document is read; the open one stays as it was parsed",
+    },
     Setting {
         name: "theme",
         kind: Kind::ChoiceOrName(&["auto", "dark", "light", "crt", "cyberpunk"]),
@@ -210,6 +218,30 @@ pub const ALL: &[Setting] = &[
         default: "mmdc",
         help: "the Mermaid CLI executable",
     },
+    Setting {
+        name: "structured.indent",
+        kind: Kind::Number { min: 1, max: 16 },
+        default: "2",
+        help: "columns one JSON/YAML nesting level is indented by",
+    },
+    Setting {
+        name: "structured.path",
+        kind: Kind::Choice(&["auto", "always", "never"]),
+        default: "auto",
+        help: "show the path of the selected node",
+    },
+    Setting {
+        name: "structured.show_indices",
+        kind: BOOL,
+        default: "true",
+        help: "number sequence items as [0], [1], [2]",
+    },
+    Setting {
+        name: "structured.collapsed_summary",
+        kind: BOOL,
+        default: "true",
+        help: "say what a collapsed container holds",
+    },
 ];
 
 /// Look a key up by its exact name.
@@ -228,6 +260,7 @@ pub fn matching(prefix: &str) -> Vec<&'static str> {
 /// The current value of `name`, written the way the key accepts it.
 pub fn read(config: &Config, name: &str) -> Option<String> {
     let v = match name {
+        "format" => config.format.as_str().to_string(),
         "theme" => config.theme.as_str().to_string(),
         "color" => config.color.as_str().to_string(),
         "mouse" => config.mouse.to_string(),
@@ -247,6 +280,10 @@ pub fn read(config: &Config, name: &str) -> Option<String> {
         "mermaid.backend" => config.mermaid.backend.as_str().to_string(),
         "mermaid.images" => config.mermaid.images.as_str().to_string(),
         "mermaid.mmdc_command" => config.mermaid.mmdc_command.clone(),
+        "structured.indent" => config.structured.indent.to_string(),
+        "structured.path" => config.structured.path.as_str().to_string(),
+        "structured.show_indices" => config.structured.show_indices.to_string(),
+        "structured.collapsed_summary" => config.structured.collapsed_summary.to_string(),
         _ => return None,
     };
     Some(v)
@@ -275,6 +312,14 @@ pub fn write(config: &mut Config, name: &str, value: &str) -> Result<Effect, Str
     };
 
     let effect = match name {
+        // A document is parsed once, from the format that was asked for when
+        // it was opened (spec §16.3: changing the format afterwards is not a
+        // runtime setting). Writing this key records what the *next* session
+        // should read, so nothing on screen has to change.
+        "format" => {
+            config.format = FormatMode::parse(value).ok_or_else(bad)?;
+            Effect::Redraw
+        }
         "theme" => {
             config.theme = Theme::parse(value);
             Effect::Palette
@@ -355,6 +400,22 @@ pub fn write(config: &mut Config, name: &str, value: &str) -> Result<Effect, Str
                 return Err(bad());
             }
             config.mermaid.mmdc_command = value.to_string();
+            Effect::Relayout
+        }
+        "structured.indent" => {
+            config.structured.indent = u8::try_from(number(16)?).map_err(|_| bad())?;
+            Effect::Relayout
+        }
+        "structured.path" => {
+            config.structured.path = PathMode::parse(value).ok_or_else(bad)?;
+            Effect::Redraw
+        }
+        "structured.show_indices" => {
+            config.structured.show_indices = boolean()?;
+            Effect::Relayout
+        }
+        "structured.collapsed_summary" => {
+            config.structured.collapsed_summary = boolean()?;
             Effect::Relayout
         }
         _ => return Err(format!("unknown setting: {name}")),
@@ -458,6 +519,49 @@ mod tests {
             Ok(Effect::Palette)
         );
         assert_eq!(read(&config, "theme").as_deref(), Some("solarized"));
+    }
+
+    /// The structured keys behave like every other key: the values the help
+    /// offers are taken, nonsense is refused by name, and the indent is
+    /// bounded so that a stray `0` cannot flatten the hierarchy.
+    #[test]
+    fn structured_keys_take_the_values_they_advertise() {
+        let mut config = Config::default();
+        assert_eq!(read(&config, "structured.indent").as_deref(), Some("2"));
+
+        assert!(write(&mut config, "structured.indent", "4").is_ok());
+        assert_eq!(read(&config, "structured.indent").as_deref(), Some("4"));
+        assert!(write(&mut config, "structured.indent", "0").is_err());
+        assert!(write(&mut config, "structured.indent", "17").is_err());
+        assert!(write(&mut config, "structured.indent", "wide").is_err());
+        assert_eq!(
+            read(&config, "structured.indent").as_deref(),
+            Some("4"),
+            "a refused value leaves the old one in place"
+        );
+
+        assert!(write(&mut config, "structured.path", "never").is_ok());
+        assert_eq!(read(&config, "structured.path").as_deref(), Some("never"));
+        let message = write(&mut config, "structured.path", "sometimes").unwrap_err();
+        assert!(message.contains("structured.path"), "{message}");
+        assert!(message.contains("always"), "{message}");
+
+        assert!(write(&mut config, "structured.show_indices", "false").is_ok());
+        assert!(!config.structured.show_indices);
+        assert!(write(&mut config, "structured.collapsed_summary", "no").is_err());
+    }
+
+    /// `format` is settable and readable, but it describes how a document is
+    /// read rather than how it looks, so it may not claim a layout effect.
+    #[test]
+    fn the_format_key_takes_every_format_name() {
+        let mut config = Config::default();
+        assert_eq!(read(&config, "format").as_deref(), Some("auto"));
+        for value in ["markdown", "json", "yaml", "auto"] {
+            assert_eq!(write(&mut config, "format", value), Ok(Effect::Redraw));
+            assert_eq!(read(&config, "format").as_deref(), Some(value));
+        }
+        assert!(write(&mut config, "format", "toml").is_err());
     }
 
     #[test]

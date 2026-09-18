@@ -82,7 +82,7 @@ pub fn slice_line_text(line: &RenderLine, h_offset: usize, width: usize) -> Stri
 mod tests {
     use super::*;
     use crate::document::markdown::parse;
-    use crate::document::SearchIndex;
+    use crate::document::DocumentModel;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::theme::Theme;
 
@@ -119,10 +119,9 @@ mod tests {
     /// on the span properties is the point here — they *are* the behaviour.
     #[test]
     fn slicing_preserves_span_styles_and_search_marks() {
-        let doc = parse("hello **world**\n");
+        let doc = DocumentModel::markdown(parse("hello **world**\n"));
         let theme = Theme::dark();
-        let idx = SearchIndex::build(&doc);
-        let matches = idx.find("world", false);
+        let matches = doc.search_index().find("world", false);
         assert_eq!(matches.len(), 1, "the fixture has one hit");
         let opts = LayoutOptions::new(40, &theme).with_matches(&matches);
         let t = Layout::build(&doc, &opts);

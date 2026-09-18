@@ -113,7 +113,11 @@ mod tests {
     #[test]
     fn c1_controls_and_del_are_replaced() {
         assert_eq!(sanitize("a\u{7f}b"), "a\u{fffd}b");
-        assert_eq!(sanitize("a\u{9b}b"), "a\u{fffd}b", "CSI as a single C1 byte");
+        assert_eq!(
+            sanitize("a\u{9b}b"),
+            "a\u{fffd}b",
+            "CSI as a single C1 byte"
+        );
         assert_eq!(sanitize("a\u{0}b"), "a\u{fffd}b");
     }
 

@@ -73,6 +73,7 @@ pub fn marker_width(list: &List, unicode: bool) -> usize {
 mod tests {
     use super::*;
     use crate::document::markdown::parse;
+    use crate::document::DocumentModel;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::theme::Theme;
 
@@ -83,7 +84,7 @@ mod tests {
     }
 
     fn render_with(src: &str, width: usize, unicode: bool) -> String {
-        let doc = parse(src);
+        let doc = DocumentModel::markdown(parse(src));
         let theme = Theme::dark();
         let mut opts = LayoutOptions::new(width, &theme);
         opts.unicode = unicode;

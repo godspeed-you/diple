@@ -41,6 +41,7 @@ use ratatui::Terminal;
 
 use crate::app::state::{App, HelpKind, Mode};
 use crate::app::workspace::Workspace;
+use crate::config::schema::PathMode;
 use crate::render::primitives::LineKind;
 use crate::render::terminal::{DocumentView, HelpOverlay, KeyHintsSidebar, StatusBar, TocSidebar};
 
@@ -183,15 +184,19 @@ pub(crate) fn draw_in(app: &App, frame: &mut ratatui::Frame<'_>, area: Rect, foc
     }
 
     frame.render_widget(
-        DocumentView::new(
-            app.tree(),
-            app.top_line(),
-            app.h_offset(),
-            app.selected_link(),
-            app.search.current_match(),
-            &app.theme,
-            app.color,
-        ),
+        DocumentView {
+            tree: app.tree(),
+            top_line: app.top_line(),
+            h_offset: app.h_offset(),
+            selected_link: app.selected_link(),
+            current_match: app.search.current_match(),
+            // Markdown's cursor is already spoken for by the heading it
+            // scrolled to; structured data has no such landmark, so the row
+            // says where you are.
+            cursor_line: app.format().is_structured().then(|| app.cursor_line()),
+            theme: &app.theme,
+            level: app.color,
+        },
         all.content,
     );
 
@@ -218,9 +223,19 @@ pub(crate) fn draw_in(app: &App, frame: &mut ratatui::Frame<'_>, area: Rect, foc
     } else {
         app.filename().to_string()
     };
+    // Markdown has no key path, so this is `None` there and the status line
+    // keeps the shape 1.x readers know.
+    let path_mode = app.config.structured.path;
+    let path = match path_mode {
+        PathMode::Never => None,
+        PathMode::Auto | PathMode::Always => app.cursor_path(),
+    };
     frame.render_widget(
         StatusBar {
             filename: &name,
+            format: app.format().label(),
+            path: path.as_ref(),
+            path_always: path_mode == PathMode::Always,
             percent: app.percent(),
             line: app.bottom_line(),
             total: app.tree().len(),
@@ -727,6 +742,7 @@ mod tests {
             crate::terminal::capabilities::Capabilities::default(),
             None,
             false,
+            crate::document::FormatRequest::Auto,
         )
     }
 

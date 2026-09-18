@@ -401,6 +401,12 @@ impl StructuredDocument {
     /// `nodes` must already be numbered densely in pre-order with `end`,
     /// `depth`, `child_count` and `fold` filled in; [`super::Builder`] is what
     /// guarantees that, and is the only intended way in.
+    ///
+    /// The argument list is long because a parsed document genuinely has this
+    /// many independent parts; bundling them into a struct would only move the
+    /// same nine fields one call further out, since [`super::Builder`] is the
+    /// single caller and already owns each of them separately.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble(
         kind: DocumentKind,
         source: SourceDocument,
@@ -611,7 +617,9 @@ impl StructuredDocument {
         let mut cur = Some(id);
         let mut guard = 0usize;
         while let Some(node_id) = cur {
-            let Some(node) = self.node(node_id) else { break };
+            let Some(node) = self.node(node_id) else {
+                break;
+            };
             match &node.relation {
                 NodeRelation::Root { document } => {
                     // A single-document stream needs no document segment; a
@@ -646,6 +654,32 @@ impl StructuredDocument {
     pub fn first_semantic(&self) -> Option<NodeId> {
         let root = self.roots.first()?.node;
         self.first_child(root).or(Some(root))
+    }
+
+    /// Whether a document root is shown as a row of its own.
+    ///
+    /// JSON always shows its root brace, because that is how JSON is written.
+    /// A YAML stream shows a `--- Document N` row only when there is more than
+    /// one document to tell apart; a single-document stream's entries start at
+    /// the left margin, the way the file does (spec §5.2).
+    ///
+    /// The question lives here rather than in the layout engine because it
+    /// decides more than one thing: a root that is not shown has no row, and a
+    /// node with no row is not a place the cursor can be.
+    pub fn shows_root_row(&self) -> bool {
+        self.kind == DocumentKind::Json || self.roots.len() > 1
+    }
+
+    /// Whether a node contributes a row of its own to the rendered document.
+    ///
+    /// Everything does except the elided root of a single-document YAML
+    /// stream — and even that one does when it is a bare scalar, because a
+    /// document that is only `42` still has to be readable.
+    pub fn has_row(&self, id: NodeId) -> bool {
+        let Some(node) = self.node(id) else {
+            return false;
+        };
+        node.parent.is_some() || self.shows_root_row() || !node.kind.is_container()
     }
 
     /// The label shown for a node's key or index, without its value.
@@ -717,7 +751,8 @@ mod tests {
         let mut b = Builder::new(DocumentKind::Json);
         b.begin_document(true, Vec::new());
         b.open_mapping(root(), SourceSpan::default(), None).unwrap();
-        b.open_mapping(key("a"), SourceSpan::default(), None).unwrap();
+        b.open_mapping(key("a"), SourceSpan::default(), None)
+            .unwrap();
         b.scalar(
             key("b"),
             ScalarValue::plain("1", ScalarKind::Number),
@@ -780,22 +815,34 @@ mod tests {
     #[test]
     fn folds_cover_the_containers_and_nothing_else() {
         let d = doc();
-        assert_eq!(d.fold_count(), 3, "root, `a`, `c`");
-        assert_eq!(d.node(0).unwrap().fold, Some(0));
-        assert_eq!(d.node(1).unwrap().fold, Some(1));
+        assert_eq!(d.fold_count(), 2, "`a` and `c`");
+        assert_eq!(
+            d.node(0).unwrap().fold,
+            None,
+            "a root is the document, not a unit within it"
+        );
+        assert_eq!(d.node(1).unwrap().fold, Some(0));
         assert_eq!(d.node(2).unwrap().fold, None, "a scalar does not fold");
-        assert_eq!(d.node(3).unwrap().fold, Some(2));
-        assert_eq!(d.fold_at(2), Some(1), "a scalar folds with its container");
-        assert_eq!(d.fold_at(4), Some(2));
-        assert_eq!(d.fold_parents(), [None, Some(0), Some(1)]);
-        assert_eq!(d.fold_node(2), Some(3));
+        assert_eq!(d.node(3).unwrap().fold, Some(1));
+        assert_eq!(d.fold_at(2), Some(0), "a scalar folds with its container");
+        assert_eq!(d.fold_at(4), Some(1));
+        assert_eq!(
+            d.fold_at(5),
+            None,
+            "a top-level scalar entry has nothing to fold"
+        );
+        assert_eq!(d.fold_parents(), [None, Some(0)]);
+        assert_eq!(d.fold_node(0), Some(1));
+        assert_eq!(d.fold_node(1), Some(3));
+        assert_eq!(d.fold_node(2), None, "the ids are dense");
     }
 
     #[test]
     fn a_collapsed_container_keeps_its_own_row_and_hides_the_rest() {
         let d = doc();
         let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
-        folds.collapse(1); // `a`
+        folds.collapse(0); // `a`
+        assert!(!d.is_hidden(0, &folds), "the root is never hidden");
         assert!(!d.is_hidden(1, &folds), "the container's own row stays");
         assert!(d.is_hidden(2, &folds));
         assert!(d.is_hidden(3, &folds), "a nested container is hidden");
@@ -803,9 +850,195 @@ mod tests {
         assert!(!d.is_hidden(5, &folds), "a sibling is untouched");
 
         folds.expand_all();
-        folds.collapse(2); // `c`
+        folds.collapse(1); // `c`
         assert!(!d.is_hidden(3, &folds));
         assert!(d.is_hidden(4, &folds));
+    }
+
+    #[test]
+    fn a_childs_fold_state_survives_its_parents_collapse_and_expand() {
+        let d = doc();
+        let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
+        folds.collapse(1); // `c`
+        folds.collapse(0); // `a`, which encloses it
+        assert!(d.is_hidden(3, &folds), "`c` is inside a collapsed `a`");
+
+        folds.expand(0);
+        assert!(!d.is_hidden(3, &folds), "`c` has its row back");
+        assert!(
+            folds.is_collapsed(1) && d.is_hidden(4, &folds),
+            "and is still collapsed itself"
+        );
+    }
+
+    #[test]
+    fn collapse_all_shows_the_shape_of_the_file_not_one_brace() {
+        let d = doc();
+        let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
+        folds.collapse_all();
+        // The root is not a fold target, so `zM` leaves the top level legible.
+        assert!(!d.is_hidden(0, &folds));
+        assert!(!d.is_hidden(1, &folds), "`a` keeps its summary row");
+        assert!(!d.is_hidden(5, &folds), "`d` is not inside any fold");
+        assert!(d.is_hidden(2, &folds) && d.is_hidden(3, &folds) && d.is_hidden(4, &folds));
+
+        folds.expand_all();
+        assert!(
+            (0..d.node_count()).all(|id| !d.is_hidden(id, &folds)),
+            "`zR` shows everything again"
+        );
+    }
+
+    #[test]
+    fn a_search_match_is_revealed_through_every_collapsed_ancestor() {
+        let d = doc();
+        let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
+        folds.collapse_all();
+        let hits = d.search_index().find("2", false);
+        let hit = hits.first().expect("the value of `c[0]`");
+        assert_eq!(hit.node, 4);
+        assert!(d.is_hidden(hit.node, &folds));
+
+        d.reveal(hit.node, &mut folds);
+        assert!(!d.is_hidden(hit.node, &folds));
+        assert!(!folds.is_collapsed(0) && !folds.is_collapsed(1));
+    }
+
+    #[test]
+    fn an_empty_container_keeps_its_own_row_and_an_honest_summary() {
+        let mut b = Builder::new(DocumentKind::Json);
+        b.begin_document(true, Vec::new());
+        b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+        b.open_mapping(key("empty"), SourceSpan::default(), None)
+            .unwrap();
+        b.close();
+        b.open_sequence(key("none"), SourceSpan::default(), None)
+            .unwrap();
+        b.close();
+        b.close();
+        let d = b.finish(SourceDocument::new("t", ""));
+
+        assert_eq!(d.node_count(), 3);
+        assert_eq!(d.children(0), [1, 2]);
+        assert_eq!(d.children(1), Vec::<NodeId>::new());
+        assert_eq!(d.node(1).unwrap().end, 2, "an empty subtree is the node");
+        assert_eq!(d.collapsed_summary(1).as_deref(), Some("{0 members}"));
+        assert_eq!(d.collapsed_summary(2).as_deref(), Some("[0 items]"));
+
+        // Empty or not, a container is a fold target; collapsing it hides
+        // nothing because there is nothing under it.
+        assert_eq!(d.fold_count(), 2);
+        let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
+        folds.collapse_all();
+        assert!(!d.is_hidden(1, &folds) && !d.is_hidden(2, &folds));
+    }
+
+    #[test]
+    fn a_document_that_is_only_a_scalar_is_still_a_document() {
+        for kind in [DocumentKind::Json, DocumentKind::Yaml] {
+            let mut b = Builder::new(kind);
+            b.begin_document(true, Vec::new());
+            b.scalar(
+                root(),
+                ScalarValue::plain("42", ScalarKind::Number),
+                SourceSpan::default(),
+                None,
+            );
+            let d = b.finish(SourceDocument::new("t", ""));
+
+            assert_eq!(d.node_count(), 1);
+            assert_eq!(d.fold_count(), 0, "there is nothing to fold");
+            assert_eq!(
+                d.first_semantic(),
+                Some(0),
+                "the cursor has exactly one place to be"
+            );
+            assert_eq!(d.fold_at(0), None);
+            assert!(!d.is_hidden(0, &FoldState::from_parents(Vec::new())));
+            assert_eq!(d.path(0).breadcrumb(false), "");
+            assert!(
+                d.has_row(0),
+                "a scalar root is shown even where a mapping root is elided"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_row_is_shown_for_json_and_for_a_stream_but_not_for_one_yaml_document() {
+        let json = doc();
+        assert!(json.shows_root_row() && json.has_row(0));
+
+        let mut b = Builder::new(DocumentKind::Yaml);
+        b.begin_document(false, Vec::new());
+        b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+        b.scalar(
+            key("a"),
+            ScalarValue::plain("1", ScalarKind::Number),
+            SourceSpan::default(),
+            None,
+        );
+        b.close();
+        let one = b.finish(SourceDocument::new("t", ""));
+        assert!(!one.shows_root_row());
+        assert!(!one.has_row(0), "spec §5.2: no root row, no cursor stop");
+        assert!(one.has_row(1));
+        assert_eq!(one.first_semantic(), Some(1));
+
+        let mut b = Builder::new(DocumentKind::Yaml);
+        for _ in 0..2 {
+            b.begin_document(true, Vec::new());
+            b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+            b.scalar(
+                key("a"),
+                ScalarValue::plain("1", ScalarKind::Number),
+                SourceSpan::default(),
+                None,
+            );
+            b.close();
+        }
+        let stream = b.finish(SourceDocument::new("t", ""));
+        assert!(stream.shows_root_row(), "`--- Document N` tells them apart");
+        assert!(stream.has_row(0) && stream.has_row(2));
+    }
+
+    #[test]
+    fn a_deeply_nested_document_is_walked_without_recursion() {
+        // One mapping root plus `MAX_DEPTH - 1` nested sequences: the deepest
+        // structure a parser is allowed to hand over.
+        let mut b = Builder::new(DocumentKind::Json);
+        b.begin_document(true, Vec::new());
+        b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+        for _ in 1..MAX_DEPTH {
+            b.open_sequence(
+                NodeRelation::SequenceItem { index: 0 },
+                SourceSpan::default(),
+                None,
+            )
+            .unwrap();
+        }
+        let d = b.finish(SourceDocument::new("t", ""));
+
+        let deepest = d.node_count() - 1;
+        assert_eq!(d.node_count(), MAX_DEPTH);
+        assert_eq!(d.node(deepest).unwrap().depth, MAX_DEPTH - 1);
+        assert_eq!(d.fold_count(), MAX_DEPTH - 1, "every node but the root");
+
+        // Each of these walks the whole chain; none of them may recurse.
+        assert_eq!(
+            d.path(deepest).canonical().matches('/').count(),
+            MAX_DEPTH - 1
+        );
+        assert_eq!(d.fold_at(deepest), Some(MAX_DEPTH - 2));
+        assert_eq!(d.enclosing_fold(deepest), Some(MAX_DEPTH - 3));
+
+        let mut folds = FoldState::from_parents(d.fold_parents().to_vec());
+        folds.collapse(0);
+        assert!(!d.is_hidden(1, &folds), "the outermost unit keeps its row");
+        assert!(d.is_hidden(deepest, &folds));
+
+        folds.collapse_all();
+        d.reveal(deepest, &mut folds);
+        assert!(!d.is_hidden(deepest, &folds));
     }
 
     #[test]
@@ -816,7 +1049,7 @@ mod tests {
         assert!(d.is_hidden(4, &folds));
         d.reveal(4, &mut folds);
         assert!(!d.is_hidden(4, &folds));
-        assert!(!folds.is_collapsed(0) && !folds.is_collapsed(1) && !folds.is_collapsed(2));
+        assert!(!folds.is_collapsed(0) && !folds.is_collapsed(1));
     }
 
     #[test]

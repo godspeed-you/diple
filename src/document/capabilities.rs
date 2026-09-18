@@ -80,10 +80,20 @@ mod tests {
 
     #[test]
     fn the_presets_differ_where_the_formats_differ() {
-        assert!(DocumentCapabilities::MARKDOWN.links);
-        assert!(!DocumentCapabilities::MARKDOWN.semantic_path);
-        assert!(!DocumentCapabilities::STRUCTURED.links);
-        assert!(DocumentCapabilities::STRUCTURED.semantic_path);
+        // Read through a binding so that these stay assertions about the
+        // presets rather than constants clippy can fold away.
+        let md = DocumentCapabilities::MARKDOWN;
+        let structured = DocumentCapabilities::STRUCTURED;
+        assert_eq!(
+            (md.links, md.semantic_path),
+            (true, false),
+            "Markdown has links and no key path"
+        );
+        assert_eq!(
+            (structured.links, structured.semantic_path),
+            (false, true),
+            "structured data has a key path and no links"
+        );
         // Both are readers of a hierarchy that folds.
         for caps in [
             DocumentCapabilities::MARKDOWN,

@@ -235,7 +235,13 @@ impl App {
         } = env;
         let folds = doc.fold_state();
         let mut toc = TocState::new();
-        toc.open = config.toc;
+        // Deriving the outline is the one thing a lazily built sidebar cannot
+        // put off: a session that starts with it open has to have something
+        // to draw.
+        if config.toc {
+            toc.ensure(&doc);
+            toc.open = !toc.is_empty();
+        }
         let hints = HintsState {
             open: config.key_hints,
         };
@@ -731,6 +737,16 @@ pub(super) mod test_support {
 
     pub(super) fn app() -> App {
         app_with(DOC, (80, 12))
+    }
+
+    /// The Markdown model behind a test app.
+    ///
+    /// Tests that assert on headings, anchors or links are asking a
+    /// Markdown-specific question, which is exactly what
+    /// [`DocumentModel::as_markdown`] is for. Naming it once here keeps the
+    /// unwrap out of every call site.
+    pub(super) fn md(app: &App) -> &crate::document::markdown::Document {
+        app.doc.as_markdown().expect("a Markdown test document")
     }
 
     pub(super) fn key(app: &mut App, c: char) {

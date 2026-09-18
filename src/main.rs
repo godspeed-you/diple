@@ -1,12 +1,12 @@
-//! `diple` — an interactive terminal Markdown reader.
+//! `diple` — an interactive terminal reader for structured documents.
 //!
 //! Flow: parse CLI → load and merge configuration → handle the diagnostic and
-//! generator flags → read the document (file or stdin) → parse → detect
-//! terminal capabilities → run the interactive pager, or print the plain
-//! rendered document when the output is not a terminal.
+//! generator flags → read the input (file or stdin) → decide its format and
+//! parse it → detect terminal capabilities → run the interactive pager, or
+//! print the plain rendered document when the output is not a terminal.
 //!
-//! Exit codes: `0` success, `1` runtime error, `2` usage or configuration
-//! error.
+//! Exit codes: `0` success, `1` runtime error — including a document that
+//! does not parse — and `2` usage or configuration error.
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
@@ -17,7 +17,7 @@ use clap::Parser;
 use diple::app::{self, App, AppEnv, AppOptions, Workspace};
 use diple::cli::CliArgs;
 use diple::config::{self, Config, KeyMap};
-use diple::document::Document;
+use diple::document::{DocumentError, DocumentModel, SourceDocument};
 use diple::layout::{Layout, LayoutOptions};
 use diple::terminal::{self, lifecycle, Capabilities};
 
@@ -37,6 +37,12 @@ fn main() -> ExitCode {
             eprintln!("diple: {message}");
             ExitCode::from(EXIT_FAILURE)
         }
+        // The report is several lines of quoted source, so it is printed as
+        // it stands rather than squeezed behind a `diple:` prefix.
+        Err(Failure::Document(error)) => {
+            eprintln!("{}", error.report());
+            ExitCode::from(EXIT_FAILURE)
+        }
         Err(Failure::BrokenPipe) => ExitCode::SUCCESS,
     }
 }
@@ -47,8 +53,19 @@ enum Failure {
     Usage(String),
     /// Runtime error (exit 1).
     Runtime(String),
+    /// The document did not parse as the format it was read as (exit 1).
+    ///
+    /// Separate from [`Failure::Runtime`] because the message is a positioned
+    /// report with a source excerpt, not a sentence.
+    Document(Box<DocumentError>),
     /// stdout was closed (`diple x.md | head`) — not an error.
     BrokenPipe,
+}
+
+impl From<DocumentError> for Failure {
+    fn from(error: DocumentError) -> Failure {
+        Failure::Document(Box::new(error))
+    }
 }
 
 impl From<std::io::Error> for Failure {
@@ -120,12 +137,23 @@ fn run() -> Result<ExitCode, Failure> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let (name, source) = read_input(args.file.as_deref())?;
-    let doc = diple::document::parse(&source);
+    let (name, text) = read_input(args.file.as_deref())?;
+    // The format the whole session reads with: `--format` when it was given,
+    // otherwise the configured default, otherwise detection. The workspace
+    // keeps it so that `:open` decides exactly as the command line did.
+    let format = cfg.format.request();
+    // Deliberately before the terminal is taken over: a document that does
+    // not parse is reported on a terminal that was never left, so there is no
+    // state to restore and no path on which a raw-mode terminal can survive
+    // the process.
+    let loaded = diple::document::load(format, SourceDocument::new(name.clone(), text))?;
+    let doc = loaded.model;
     if args.debug {
         eprintln!(
-            "diple: parsed {} nodes in {:?}",
+            "diple: parsed {} nodes as {}{} in {:?}",
             doc.node_count(),
+            loaded.format.label(),
+            if loaded.detected { " (detected)" } else { "" },
             started.elapsed()
         );
     }
@@ -171,8 +199,15 @@ fn run() -> Result<ExitCode, Failure> {
         },
     );
     // The first document is the whole workspace until `:open` adds another.
-    let mut workspace =
-        Workspace::new(app, cfg, keymap, caps_for_workspace, args.width, args.debug);
+    let mut workspace = Workspace::new(
+        app,
+        cfg,
+        keymap,
+        caps_for_workspace,
+        args.width,
+        args.debug,
+        format,
+    );
     if args.debug {
         eprintln!("diple: first frame ready after {:?}", started.elapsed());
     }
@@ -194,10 +229,13 @@ fn is_dumb_terminal() -> bool {
 
 /// Read the document from a file or stdin.
 ///
+/// A lone `-` is stdin, as it is for every other filter, which is what lets
+/// `diple --format yaml -` state the format of piped input.
+///
 /// Invalid UTF-8 is converted lossily with a warning rather than failing
 /// (render as best effort).
 fn read_input(file: Option<&Path>) -> Result<(String, String), Failure> {
-    match file {
+    match file.filter(|path| path.as_os_str() != "-") {
         Some(path) => {
             let bytes = std::fs::read(path)
                 .map_err(|e| Failure::Runtime(format!("cannot read {}: {e}", path.display())))?;
@@ -228,10 +266,15 @@ fn decode(bytes: Vec<u8>, name: &str) -> String {
 
 /// Non-interactive output: the plain rendered document on stdout.
 ///
-/// This is what makes `diple file.md | head` and CI usage work. A closed
-/// stdout is silently accepted.
+/// This is what makes `diple file.md | head`, `diple response.json | grep`
+/// and CI usage work. A closed stdout is silently accepted.
+///
+/// The output is the whole document in source order: no fold state is passed,
+/// so every Markdown section and every JSON/YAML container is expanded, and
+/// nothing here depends on the terminal or on where a reader happened to be
+/// looking. Two runs over the same bytes therefore print the same bytes.
 fn print_plain(
-    doc: &Document,
+    doc: &DocumentModel,
     cfg: &Config,
     caps: &Capabilities,
     width: Option<u16>,

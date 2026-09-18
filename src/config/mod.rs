@@ -11,8 +11,9 @@ pub use actions::Action;
 pub use keys::{Key, KeyMap, KeyMatch};
 pub use loader::{load, LoadedConfig};
 pub use schema::{
-    CodeConfig, ColorMode, Config, ConfigError, ImageMode, KeyBinding, LinksConfig, MermaidBackend,
-    MermaidConfig, Osc8Mode, TableConfig, TableMode, Theme,
+    CodeConfig, ColorMode, Config, ConfigError, FormatMode, ImageMode, KeyBinding, LinksConfig,
+    MermaidBackend, MermaidConfig, Osc8Mode, PathMode, StructuredConfig, TableConfig, TableMode,
+    Theme,
 };
 
 use crate::cli::CliArgs;
@@ -46,6 +47,15 @@ impl Config {
         }
 
         // CLI overrides.
+        if let Some(format) = cli.format {
+            merged.format = format;
+        }
+        if let Some(indent) = cli.structured_indent {
+            merged.structured.indent = indent;
+        }
+        if let Some(path) = cli.path {
+            merged.structured.path = path;
+        }
         if let Some(theme) = &cli.theme {
             merged.theme = Theme::parse(theme);
         }
@@ -191,6 +201,58 @@ mod tests {
             .merged_with_env(&cli(&["--key-hints", "--no-key-hints"]), |_| None)
             .unwrap();
         assert!(!merged.key_hints, "the later flag wins");
+    }
+
+    /// `--format` is the last word on how a document is read, and the file
+    /// may still set the default for a session that does not pass it.
+    #[test]
+    fn the_format_flag_beats_the_configured_default() {
+        use crate::document::{DocumentKind, FormatRequest};
+
+        let base = Config {
+            format: FormatMode::Yaml,
+            ..Config::default()
+        };
+        let merged = base.merged_with_env(&cli(&[]), |_| None).unwrap();
+        assert_eq!(
+            merged.format.request(),
+            FormatRequest::Fixed(DocumentKind::Yaml),
+            "the file decides when the flag is absent"
+        );
+
+        let merged = base
+            .merged_with_env(&cli(&["--format", "json"]), |_| None)
+            .unwrap();
+        assert_eq!(
+            merged.format.request(),
+            FormatRequest::Fixed(DocumentKind::Json)
+        );
+
+        let merged = base
+            .merged_with_env(&cli(&["--format", "auto"]), |_| None)
+            .unwrap();
+        assert_eq!(merged.format.request(), FormatRequest::Auto);
+    }
+
+    #[test]
+    fn the_structured_flags_override_the_structured_section() {
+        let mut base = Config::default();
+        base.structured.indent = 4;
+        base.structured.path = PathMode::Never;
+
+        let merged = base.merged_with_env(&cli(&[]), |_| None).unwrap();
+        assert_eq!(merged.structured.indent, 4);
+        assert_eq!(merged.structured.path, PathMode::Never);
+        assert!(merged.structured.show_indices, "untouched keys survive");
+
+        let merged = base
+            .merged_with_env(
+                &cli(&["--structured-indent", "8", "--path", "always"]),
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(merged.structured.indent, 8);
+        assert_eq!(merged.structured.path, PathMode::Always);
     }
 
     #[test]

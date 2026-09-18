@@ -385,6 +385,24 @@ impl RenderTree {
         self.first_line.get(&node).copied()
     }
 
+    /// The row that visibly *is* `node` — a Markdown heading's text row, a
+    /// structured container's key row — rather than the blank spacer the node
+    /// also owns.
+    ///
+    /// Jumping uses this and not [`first_line_of`](Self::first_line_of): a
+    /// node's first line is often the blank line in front of it, so scrolling
+    /// to that would put the landmark one row lower on screen than the reader
+    /// asked for. The structural index is in line order and node ids ascend
+    /// with it, so the lookup is a binary search rather than a scan of every
+    /// container in a large document.
+    pub fn landmark_line_of(&self, node: NodeId) -> Option<usize> {
+        self.headings
+            .binary_search_by_key(&node, |(_, n, _)| *n)
+            .ok()
+            .map(|i| self.headings[i].0)
+            .or_else(|| self.first_line_of(node))
+    }
+
     /// Line index for the semantic anchor `(node, offset)`; the offset is
     /// clamped to the node's own lines. Returns `None` for hidden nodes.
     pub fn line_index_for(&self, node: NodeId, offset: usize) -> Option<usize> {

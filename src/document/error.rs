@@ -176,7 +176,10 @@ mod tests {
             "unexpected indentation",
         );
         let report = err.report();
-        assert!(report.starts_with("YAML parse error\nconfig.yaml:5:6\n"), "{report}");
+        assert!(
+            report.starts_with("YAML parse error\nconfig.yaml:5:6\n"),
+            "{report}"
+        );
         assert!(report.contains("> 5 |      - name: nginx"), "{report}");
         assert!(report.contains("  3 | spec:"), "{report}");
         assert!(report.contains("  7 | z: 9"), "{report}");

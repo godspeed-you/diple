@@ -15,7 +15,7 @@ use ratatui::text::{Line as RLine, Span as RSpan};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::config::actions::Action;
-use crate::document::{LinkId, Match, OutlineEntry};
+use crate::document::{DocumentPath, LinkId, Match, OutlineEntry};
 use crate::render::primitives::RenderTree;
 use crate::render::theme::{Color, ColorLevel, Style, Theme};
 use crate::util::unicode;
@@ -62,45 +62,51 @@ pub(crate) fn to_ratatui(style: Style, level: ColorLevel) -> RStyle {
 }
 
 /// Widget drawing a window of a [`RenderTree`].
+///
+/// Built as a struct literal like every other widget here, so that adding a
+/// field is a compile error at each call site rather than one more positional
+/// argument nobody can read.
 pub(crate) struct DocumentView<'a> {
-    tree: &'a RenderTree,
-    top_line: usize,
-    h_offset: usize,
-    selected_link: Option<LinkId>,
-    current_match: Option<Match>,
-    theme: &'a Theme,
-    level: ColorLevel,
+    /// The laid-out document.
+    pub(crate) tree: &'a RenderTree,
+    /// Absolute line at the top of the viewport.
+    pub(crate) top_line: usize,
+    /// Horizontal scroll offset in columns.
+    pub(crate) h_offset: usize,
+    /// Link drawn as selected, if any.
+    pub(crate) selected_link: Option<LinkId>,
+    /// The search match drawn as the current one, if any.
+    pub(crate) current_match: Option<Match>,
+    /// Absolute line the semantic cursor sits on, for the formats that show
+    /// it.
+    ///
+    /// A *draw-time* input on purpose: a highlight that fed into layout would
+    /// re-lay the document out on every scroll, and the cursor's identity is
+    /// the node, never the row.
+    pub(crate) cursor_line: Option<usize>,
+    /// Theme.
+    pub(crate) theme: &'a Theme,
+    /// Colour level.
+    pub(crate) level: ColorLevel,
 }
 
-impl<'a> DocumentView<'a> {
-    /// Create the view.
-    pub(crate) fn new(
-        tree: &'a RenderTree,
-        top_line: usize,
-        h_offset: usize,
-        selected_link: Option<LinkId>,
-        current_match: Option<Match>,
-        theme: &'a Theme,
-        level: ColorLevel,
-    ) -> Self {
-        Self {
-            tree,
-            top_line,
-            h_offset,
-            selected_link,
-            current_match,
-            theme,
-            level,
-        }
-    }
-
+impl DocumentView<'_> {
     /// The lines this view would draw, as ratatui text (also used by tests).
     pub(crate) fn lines(&self, width: usize, height: usize) -> Vec<RLine<'static>> {
         let mut out = Vec::with_capacity(height);
-        for line in self.tree.visible_slice(self.top_line, height) {
+        for (offset, line) in self
+            .tree
+            .visible_slice(self.top_line, height)
+            .iter()
+            .enumerate()
+        {
+            let on_cursor = self.cursor_line == Some(self.top_line + offset);
             let mut spans = Vec::new();
             for span in slice_line(line, self.h_offset, width) {
                 let mut style = span.style;
+                if on_cursor {
+                    style = style.patch(self.theme.structured.cursor_row);
+                }
                 if span.search_match {
                     let current = self
                         .current_match
@@ -116,6 +122,17 @@ impl<'a> DocumentView<'a> {
                     style = style.patch(self.theme.link_selected);
                 }
                 spans.push(RSpan::styled(span.text, to_ratatui(style, self.level)));
+            }
+            // A cursor row reads as a row, so the highlight runs to the right
+            // edge rather than stopping where the text happens to end.
+            if on_cursor {
+                let used: usize = spans.iter().map(|s| unicode::width(&s.content)).sum();
+                if used < width {
+                    spans.push(RSpan::styled(
+                        " ".repeat(width - used),
+                        to_ratatui(self.theme.structured.cursor_row, self.level),
+                    ));
+                }
             }
             out.push(RLine::from(spans));
         }
@@ -135,6 +152,20 @@ impl Widget for DocumentView<'_> {
 pub(crate) struct StatusBar<'a> {
     /// Document name shown on the left.
     pub(crate) filename: &'a str,
+    /// The format the document was read as (`Markdown`, `JSON`, `YAML`).
+    ///
+    /// Spec §6.6 requires the detected format to be visible: a reader who
+    /// piped something in needs to know whether diple agreed with them.
+    pub(crate) format: &'a str,
+    /// The semantic path of the selected node, for formats that have one.
+    ///
+    /// Already truncated by the caller is not assumed — the widget is what
+    /// knows the width, so it left-truncates here (§24.3).
+    pub(crate) path: Option<&'a DocumentPath>,
+    /// `structured.path = "always"`: keep the breadcrumb even on a line too
+    /// narrow to hold it and the progress counters both, dropping the
+    /// counters instead. Under `auto` the counters win.
+    pub(crate) path_always: bool,
     /// Scroll percentage.
     pub(crate) percent: u8,
     /// 1-based number of the last line displayed. The same position
@@ -157,14 +188,55 @@ pub(crate) struct StatusBar<'a> {
 
 impl StatusBar<'_> {
     /// The plain status text (without the search prompt).
+    ///
+    /// The line reads `name  FORMAT  message … path   42%  12/380`. When the
+    /// terminal is too narrow for all of it, the parts go in the order §24.3
+    /// gives: the path is dropped first, and only then is the whole line
+    /// truncated with an ellipsis — filename, format and progress are what a
+    /// reader orients by.
     pub(crate) fn text(&self, width: usize) -> String {
         let right = format!("{}%  {}/{}", self.percent, self.line, self.total);
-        let left = match self.message {
-            Some(m) if !m.is_empty() => format!("{}  {}", self.filename, m),
-            _ => self.filename.to_string(),
-        };
+        let mut left = format!("{}  {}", self.filename, self.format);
+        if let Some(m) = self.message {
+            if !m.is_empty() {
+                left = format!("{left}  {m}");
+            }
+        }
         let lw = unicode::width(&left);
         let rw = unicode::width(&right);
+
+        // A breadcrumb needs room to say anything at all; below that the two
+        // spaces of separation are worth more than a lone ellipsis.
+        const MIN_PATH: usize = 8;
+        let gap = width.saturating_sub(lw + rw);
+        let crumb = self.path.and_then(|path| {
+            let room = if gap >= MIN_PATH + 4 {
+                gap - 4
+            } else if self.path_always {
+                // Orientation was asked to outrank progress, so the room the
+                // counters wanted goes to the breadcrumb instead.
+                width.saturating_sub(lw + 2)
+            } else {
+                return None;
+            };
+            Some(path.breadcrumb_within(room, self.unicode)).filter(|c| !c.is_empty())
+        });
+
+        if let Some(crumb) = crumb {
+            let cw = unicode::width(&crumb);
+            if lw + 2 + cw + 2 + rw <= width {
+                let pad = width - lw - 2 - cw - rw;
+                return format!("{left}  {crumb}{}{right}", " ".repeat(pad));
+            }
+            if self.path_always {
+                return unicode::truncate_with_ellipsis(
+                    &format!("{left}  {crumb}"),
+                    width,
+                    ellipsis(self.unicode),
+                );
+            }
+        }
+
         if lw + rw + 2 > width {
             return unicode::truncate_with_ellipsis(
                 &format!("{left}  {right}"),
@@ -172,7 +244,7 @@ impl StatusBar<'_> {
                 ellipsis(self.unicode),
             );
         }
-        format!("{}{}{}", left, " ".repeat(width - lw - rw), right)
+        format!("{left}{}{right}", " ".repeat(gap))
     }
 }
 
@@ -709,6 +781,7 @@ impl Widget for HelpOverlay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::PathSegment;
 
     fn tree(src: &str, width: usize) -> (RenderTree, Theme) {
         (crate::testing::render(src, width), crate::testing::theme())
@@ -723,9 +796,25 @@ mod tests {
     // test then adjusts.
     // ---------------------------------------------------------------
 
+    fn document_view<'a>(tree: &'a RenderTree, theme: &'a Theme) -> DocumentView<'a> {
+        DocumentView {
+            tree,
+            top_line: 0,
+            h_offset: 0,
+            selected_link: None,
+            current_match: None,
+            cursor_line: None,
+            theme,
+            level: ColorLevel::TrueColor,
+        }
+    }
+
     fn status_bar<'a>(theme: &'a Theme) -> StatusBar<'a> {
         StatusBar {
             filename: "README.md",
+            format: "Markdown",
+            path: None,
+            path_always: false,
             percent: 0,
             line: 1,
             total: 1,
@@ -741,8 +830,9 @@ mod tests {
         items
             .iter()
             .enumerate()
-            .map(|(section, (depth, text))| OutlineEntry {
-                section,
+            .map(|(index, (depth, text))| OutlineEntry {
+                node: index,
+                fold: Some(index),
                 depth: *depth,
                 text: (*text).to_string(),
             })
@@ -830,13 +920,18 @@ mod tests {
     #[test]
     fn document_view_windows_and_scrolls() {
         let (tree, theme) = tree("# Title\n\nalpha beta gamma\n", 40);
-        let view = DocumentView::new(&tree, 0, 0, None, None, &theme, ColorLevel::TrueColor);
+        let view = document_view(&tree, &theme);
         let lines = view.lines(40, 2);
         assert_eq!(lines.len(), 2);
         let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(first, "Title");
 
-        let view = DocumentView::new(&tree, 3, 2, None, None, &theme, ColorLevel::None);
+        let view = DocumentView {
+            top_line: 3,
+            h_offset: 2,
+            level: ColorLevel::None,
+            ..document_view(&tree, &theme)
+        };
         let lines = view.lines(40, 5);
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "pha beta gamma");
@@ -845,7 +940,10 @@ mod tests {
     #[test]
     fn selected_link_is_highlighted() {
         let (tree, theme) = tree("see [docs](https://example.com) now\n", 40);
-        let view = DocumentView::new(&tree, 0, 0, Some(0), None, &theme, ColorLevel::TrueColor);
+        let view = DocumentView {
+            selected_link: Some(0),
+            ..document_view(&tree, &theme)
+        };
         let lines = view.lines(40, 1);
         let link = lines[0]
             .spans
@@ -871,6 +969,120 @@ mod tests {
         assert_eq!(unicode::width(&text), 40);
         // Narrow terminals truncate instead of panicking.
         assert!(unicode::width(&bar.text(10)) <= 10);
+    }
+
+    /// A reader who piped something in has to be able to see what diple
+    /// decided it was (spec §6.6).
+    #[test]
+    fn the_status_line_names_the_format_it_read() {
+        let theme = Theme::dark();
+        let mut bar = status_bar(&theme);
+        bar.format = "YAML";
+        assert!(bar.text(60).contains("YAML"));
+        bar.format = "JSON";
+        assert!(bar.text(60).contains("JSON"));
+    }
+
+    #[test]
+    fn the_breadcrumb_appears_when_there_is_room_and_goes_when_there_is_not() {
+        let theme = Theme::dark();
+        let path = DocumentPath::new(vec![
+            PathSegment::Key("spec".into()),
+            PathSegment::Key("containers".into()),
+            PathSegment::Index(0),
+            PathSegment::Key("image".into()),
+        ]);
+        let mut bar = status_bar(&theme);
+        bar.format = "YAML";
+        bar.path = Some(&path);
+        bar.percent = 42;
+        bar.line = 12;
+        bar.total = 380;
+        assert!(
+            bar.text(90).contains("spec \u{203a} containers"),
+            "a Unicode terminal gets the Unicode separator"
+        );
+        bar.unicode = false;
+
+        let wide = bar.text(90);
+        assert!(wide.contains("spec > containers > [0] > image"), "{wide}");
+        assert!(wide.ends_with("42%  12/380"), "{wide}");
+        assert_eq!(unicode::width(&wide), 90);
+
+        // Narrower: the breadcrumb keeps the node the reader selected and
+        // drops ancestors from the left (§24.3).
+        let middling = bar.text(52);
+        assert!(middling.contains("image"), "the leaf survives: {middling}");
+        assert!(
+            !middling.contains("spec > containers"),
+            "ancestors went first: {middling}"
+        );
+        assert!(middling.ends_with("42%  12/380"), "{middling}");
+
+        // Narrower still: the path goes entirely, progress stays.
+        let narrow = bar.text(34);
+        assert!(narrow.ends_with("42%  12/380"), "{narrow}");
+        assert!(!narrow.contains("image"), "{narrow}");
+        assert!(unicode::width(&narrow) <= 34);
+    }
+
+    /// `structured.path = "always"` reverses the priority: orientation is
+    /// worth more to this reader than the progress counters.
+    #[test]
+    fn path_always_keeps_the_breadcrumb_instead_of_the_counters() {
+        let theme = Theme::dark();
+        let path = DocumentPath::new(vec![
+            PathSegment::Key("spec".into()),
+            PathSegment::Key("image".into()),
+        ]);
+        let mut bar = status_bar(&theme);
+        bar.format = "YAML";
+        bar.path = Some(&path);
+        bar.percent = 42;
+        bar.line = 12;
+        bar.total = 380;
+        bar.unicode = false;
+
+        let auto = bar.text(30);
+        assert!(auto.contains("12/380"), "auto keeps the counters: {auto}");
+
+        bar.path_always = true;
+        let always = bar.text(30);
+        assert!(always.contains("image"), "{always}");
+        assert!(!always.contains("12/380"), "{always}");
+        assert!(unicode::width(&always) <= 30);
+    }
+
+    /// The cursor row is painted at draw time, so it must colour the whole
+    /// row and must never change how many rows there are.
+    #[test]
+    fn the_cursor_row_is_highlighted_across_the_full_width() {
+        let (tree, theme) = tree("# Title\n\nalpha beta\n", 40);
+        let plain = document_view(&tree, &theme);
+        let marked = DocumentView {
+            cursor_line: Some(0),
+            ..document_view(&tree, &theme)
+        };
+        let a = plain.lines(40, 3);
+        let b = marked.lines(40, 3);
+        assert_eq!(a.len(), b.len(), "highlighting is not a layout input");
+
+        let text =
+            |l: &RLine<'_>| -> String { l.spans.iter().map(|s| s.content.to_string()).collect() };
+        assert_eq!(text(&a[1]), text(&b[1]), "an unmarked row is untouched");
+        assert!(
+            text(&b[0]).starts_with("Title"),
+            "the row still says what it said"
+        );
+        assert_eq!(
+            unicode::width(&text(&b[0])),
+            40,
+            "the highlight runs to the right edge"
+        );
+        assert_ne!(
+            a[0].spans[0].style, b[0].spans[0].style,
+            "the marked row is styled differently"
+        );
     }
 
     #[test]
@@ -1087,8 +1299,11 @@ mod tests {
         let (tree, theme) = tree("# Title\n\nbody text here\n", 20);
         let area = Rect::new(0, 0, 20, 6);
         let mut buf = Buffer::empty(area);
-        DocumentView::new(&tree, 0, 0, None, None, &theme, ColorLevel::Ansi256)
-            .render(area, &mut buf);
+        DocumentView {
+            level: ColorLevel::Ansi256,
+            ..document_view(&tree, &theme)
+        }
+        .render(area, &mut buf);
         let row: String = (0..20)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect::<String>();

@@ -165,6 +165,7 @@ impl StructuredDocument {
 mod tests {
     use super::*;
     use crate::document::format::DocumentKind;
+    use crate::document::outline::PREVIEW_LIMIT;
     use crate::document::source::{SourceDocument, SourceSpan};
 
     /// ```text
@@ -194,7 +195,8 @@ mod tests {
         b.close();
         b.open_sequence(key("items"), SourceSpan::default(), None)
             .unwrap();
-        b.open_mapping(item(0), SourceSpan::default(), None).unwrap();
+        b.open_mapping(item(0), SourceSpan::default(), None)
+            .unwrap();
         b.scalar(
             key("id"),
             ScalarValue::plain("1", ScalarKind::Number),
@@ -282,10 +284,8 @@ mod tests {
     fn the_outline_is_the_whole_tree_with_short_previews() {
         let d = doc();
         let outline = d.outline();
-        let shown: Vec<(usize, &str)> = outline
-            .iter()
-            .map(|e| (e.depth, e.text.as_str()))
-            .collect();
+        let shown: Vec<(usize, &str)> =
+            outline.iter().map(|e| (e.depth, e.text.as_str())).collect();
         assert_eq!(
             shown,
             [
@@ -298,10 +298,87 @@ mod tests {
                 (2, "[1]: two"),
             ]
         );
-        // Every entry points at a node; only containers carry a fold.
-        assert_eq!(outline[0].fold, Some(0));
-        assert_eq!(outline[2].fold, None);
+        // Every entry points at a node; only foldable containers carry a fold,
+        // and a document root is not one.
+        assert_eq!(outline[0].fold, None, "the root is not a fold target");
+        assert_eq!(outline[1].fold, Some(0), "`meta` is the first one");
+        assert_eq!(outline[2].fold, None, "a scalar does not fold");
+        assert_eq!(outline[3].fold, Some(1));
         assert_eq!(outline[4].node, 4);
+        assert_eq!(outline.len(), d.node_count(), "the policy is complete");
+    }
+
+    #[test]
+    fn an_outline_preview_never_lets_one_scalar_decide_the_width() {
+        let mut b = Builder::new(DocumentKind::Yaml);
+        b.begin_document(false, Vec::new());
+        b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+        b.scalar(
+            key("script"),
+            ScalarValue::plain("x".repeat(4096), ScalarKind::String),
+            SourceSpan::default(),
+            None,
+        );
+        b.scalar(
+            key("empty"),
+            ScalarValue::plain("", ScalarKind::Null),
+            SourceSpan::default(),
+            None,
+        );
+        b.close();
+        let d = b.finish(SourceDocument::new("t", ""));
+
+        let outline = d.outline();
+        let long = &outline[1].text;
+        assert!(long.starts_with("script: x"), "{long}");
+        assert!(
+            crate::util::unicode::width(long) <= "script: ".len() + PREVIEW_LIMIT,
+            "{long}"
+        );
+        assert_eq!(
+            outline[2].text, "empty",
+            "an empty value leaves the key alone"
+        );
+    }
+
+    #[test]
+    fn a_deep_document_gets_a_complete_outline_without_recursing() {
+        let mut b = Builder::new(DocumentKind::Json);
+        b.begin_document(true, Vec::new());
+        b.open_mapping(root(), SourceSpan::default(), None).unwrap();
+        for _ in 1..MAX_DEPTH {
+            b.open_sequence(item(0), SourceSpan::default(), None)
+                .unwrap();
+        }
+        let d = b.finish(SourceDocument::new("t", ""));
+
+        let outline = d.outline();
+        assert_eq!(outline.len(), MAX_DEPTH);
+        assert_eq!(outline[MAX_DEPTH - 1].depth, MAX_DEPTH - 1);
+        assert_eq!(outline[MAX_DEPTH - 1].text, "[0]");
+        assert_eq!(outline[0].fold, None);
+        assert_eq!(outline[1].fold, Some(0), "the fold ids stay dense");
+        assert_eq!(d.document_of(MAX_DEPTH - 1), Some(0));
+    }
+
+    #[test]
+    fn a_collapsed_ancestor_is_what_a_search_reveal_has_to_open() {
+        let d = doc();
+        let mut f = folds(&d);
+        f.collapse_all();
+        // `name`, deep inside `meta`.
+        let hits = d.search_index().find("nginx", false);
+        let hit = hits.first().expect("a match");
+        assert!(d.is_hidden(hit.node, &f));
+        assert_eq!(d.visible_anchor(hit.node, &f), Some(1), "up to `meta`");
+
+        d.reveal(hit.node, &mut f);
+        assert!(!d.is_hidden(hit.node, &f));
+        assert_eq!(d.visible_anchor(hit.node, &f), Some(hit.node));
+        assert!(
+            f.is_collapsed(d.node(3).unwrap().fold.unwrap()),
+            "`items` is unrelated and stays collapsed"
+        );
     }
 
     #[test]

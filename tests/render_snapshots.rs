@@ -14,10 +14,12 @@
 //!   accepted snapshots. An invariant fails with a pointer at the offending
 //!   line instead.
 
-use diple::document::{parse, FoldState};
+use diple::document::markdown::{self, parse};
+use diple::document::{load, DocumentModel, FoldId, FoldState, FormatRequest, SourceDocument};
 use diple::layout::{Layout, LayoutOptions};
+use diple::render::ansi::to_ansi_text;
 use diple::render::primitives::LineKind;
-use diple::render::theme::Theme;
+use diple::render::theme::{ColorLevel, Theme};
 
 const WIDTHS: [usize; 3] = [40, 80, 120];
 
@@ -66,7 +68,7 @@ fn fixtures() -> Vec<(String, String)> {
 }
 
 fn render(source: &str, width: usize) -> String {
-    let doc = parse(source);
+    let doc = DocumentModel::markdown(parse(source));
     let theme = Theme::dark();
     Layout::build(&doc, &LayoutOptions::new(width, &theme)).to_plain_text()
 }
@@ -75,10 +77,11 @@ fn render(source: &str, width: usize) -> String {
 fn fixtures_render_deterministically_at_every_width() {
     let theme = Theme::dark();
     for (name, source) in fixtures() {
-        let doc = parse(&source);
+        let model = DocumentModel::markdown(parse(&source));
+        let doc = model.as_markdown().expect("markdown");
         for width in WIDTHS {
             let opts = LayoutOptions::new(width, &theme);
-            let tree = Layout::build(&doc, &opts);
+            let tree = Layout::build(&model, &opts);
             // Sanity: every line belongs to a real node.
             for line in &tree.lines {
                 assert!(doc.node(line.node).is_some(), "{name}: bad node id");
@@ -135,9 +138,9 @@ fn width_invariant_fixtures_are_identical_at_every_width() {
 fn no_markdown_marker_leaks_into_rendered_output() {
     let theme = Theme::dark();
     for (name, source) in fixtures() {
-        let doc = parse(&source);
+        let model = DocumentModel::markdown(parse(&source));
         for width in WIDTHS {
-            let tree = Layout::build(&doc, &LayoutOptions::new(width, &theme));
+            let tree = Layout::build(&model, &LayoutOptions::new(width, &theme));
             for (idx, line) in tree.lines.iter().enumerate() {
                 let text = line.to_text();
                 if matches!(line.kind, LineKind::Heading(_)) {
@@ -176,20 +179,21 @@ fn collapsed_sections_render_only_their_headings() {
     let theme = Theme::dark();
     let mut checked = 0usize;
     for (name, source) in fixtures() {
-        let doc = parse(&source);
+        let model = DocumentModel::markdown(parse(&source));
+        let doc = model.as_markdown().expect("markdown");
         if doc.sections.is_empty() || doc.sections[0].heading != 0 {
             // A fixture with content above its first heading would keep that
             // content visible; not what this test is about.
             continue;
         }
-        let mut folds = FoldState::new(&doc);
+        let mut folds = model.fold_state();
         folds.collapse_all();
         let mut opts = LayoutOptions::new(80, &theme).with_folds(&folds);
         // The trailing footnote section is appended by the layout engine and
         // is not part of any foldable section; it is covered by its own
         // fixture snapshots and would only add noise here.
         opts.footnotes = false;
-        let tree = Layout::build(&doc, &opts);
+        let tree = Layout::build(&model, &opts);
 
         let top_level: Vec<&str> = doc
             .sections
@@ -197,7 +201,7 @@ fn collapsed_sections_render_only_their_headings() {
             .filter(|s| s.parent.is_none())
             .filter_map(|s| doc.node(s.heading))
             .filter_map(|n| match &n.kind {
-                diple::document::NodeKind::Heading(h) => Some(h.text.as_str()),
+                markdown::NodeKind::Heading(h) => Some(h.text.as_str()),
                 _ => None,
             })
             .collect();
@@ -224,7 +228,7 @@ fn ascii_fallback_and_code_options() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/code-blocks.md"),
     )
     .expect("fixture");
-    let doc = parse(&source);
+    let doc = DocumentModel::markdown(parse(&source));
     let mut opts = LayoutOptions::new(80, &theme);
     opts.unicode = false;
     opts.code_line_numbers = true;

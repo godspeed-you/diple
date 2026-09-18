@@ -1,11 +1,14 @@
 //! Smoke test: every fixture parses without panicking and yields a coherent
 //! document (unique pre-order ids, resolvable lookups, valid spans).
 
-use diple::document::{self, SearchIndex};
+mod common;
+
+use diple::document::markdown;
+use diple::document::FoldState;
 
 #[test]
 fn all_fixtures_parse_coherently() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = common::fixtures_dir();
     let mut count = 0;
     for entry in std::fs::read_dir(&dir).expect("fixtures dir") {
         let path = entry.expect("dir entry").path();
@@ -14,7 +17,7 @@ fn all_fixtures_parse_coherently() {
         }
         count += 1;
         let source = std::fs::read_to_string(&path).expect("read fixture");
-        let doc = document::parse(&source);
+        let doc = markdown::parse(&source);
         let name = path.display();
         assert!(!doc.nodes.is_empty(), "{name}: no nodes");
         let ids: Vec<_> = doc.walk().map(|n| n.id).collect();
@@ -40,14 +43,14 @@ fn all_fixtures_parse_coherently() {
                 "{name}: span not on boundary"
             );
         }
-        let folds = document::FoldState::new(&doc);
+        let folds = FoldState::from_parents(doc.fold_parents());
         for s in &doc.sections {
             assert!(
                 !doc.is_hidden(s.heading, &folds),
                 "{name}: heading hidden by default"
             );
         }
-        let index = SearchIndex::build(&doc);
+        let index = markdown::search::build(&doc);
         let _ = index.find("the", false);
     }
     assert_eq!(count, 10, "expected the ten fixtures");
@@ -55,17 +58,16 @@ fn all_fixtures_parse_coherently() {
 
 #[test]
 fn mermaid_fixture_detects_diagrams() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let source = std::fs::read_to_string(dir.join("mermaid.md")).expect("mermaid fixture");
-    let doc = document::parse(&source);
+    let source = std::fs::read_to_string(common::fixture("mermaid.md")).expect("mermaid fixture");
+    let doc = markdown::parse(&source);
     let mermaid = doc
         .walk()
-        .filter(|n| matches!(n.kind, document::NodeKind::Mermaid(_)))
+        .filter(|n| matches!(n.kind, markdown::NodeKind::Mermaid(_)))
         .count();
     assert_eq!(mermaid, 4);
     let code = doc
         .walk()
-        .filter(|n| matches!(n.kind, document::NodeKind::CodeBlock(_)))
+        .filter(|n| matches!(n.kind, markdown::NodeKind::CodeBlock(_)))
         .count();
     assert_eq!(code, 1, "the `text` fence is not mermaid");
 }

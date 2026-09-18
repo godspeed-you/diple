@@ -231,6 +231,12 @@ impl App {
             }
             Effect::Sidebar => {
                 if self.toc.open != self.config.toc {
+                    // The outline is derived lazily, so asking whether it is
+                    // empty before building it would always say yes and the
+                    // setting would never take hold.
+                    if self.config.toc {
+                        self.toc.ensure(&self.doc);
+                    }
                     self.toc.open = self.config.toc && !self.toc.is_empty();
                     self.toc.h_scroll = 0;
                 }

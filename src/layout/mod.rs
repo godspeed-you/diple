@@ -223,6 +223,11 @@ impl<'a> LayoutOptions<'a> {
         self.code_line_numbers = config.code.line_numbers || config.line_numbers;
         self.tab_width = usize::from(config.code.tab_width).max(1);
         self.wrap = config.wrap;
+        // `.max(1)` for the same reason as `tab_width`: an indent of zero
+        // renders every nesting level in the same column, which is the one
+        // value from which the structure cannot be read back.
+        self.structured_indent = usize::from(config.structured.indent).max(1);
+        self.show_indices = config.structured.show_indices;
     }
 
     /// With a fold state (enables fold markers and section elision).
@@ -1034,7 +1039,7 @@ pub fn plain_style() -> Style {
 mod tests {
     use super::*;
     use crate::document::markdown::parse;
-    use crate::document::SearchIndex;
+    use crate::document::DocumentModel;
     use crate::testing::plain as render;
 
     #[test]
@@ -1057,7 +1062,7 @@ mod tests {
 
     #[test]
     fn ascii_fallback_markers() {
-        let doc = parse("- [x] done\n  - nested\n");
+        let doc = DocumentModel::markdown(parse("- [x] done\n  - nested\n"));
         let theme = Theme::dark();
         let mut opts = LayoutOptions::new(40, &theme);
         opts.unicode = false;
@@ -1084,9 +1089,9 @@ mod tests {
 
     #[test]
     fn folded_section_body_is_elided() {
-        let doc = parse("# A\n\nbody\n\n## A1\n\nmore\n\n# B\n\nb\n");
+        let doc = DocumentModel::markdown(parse("# A\n\nbody\n\n## A1\n\nmore\n\n# B\n\nb\n"));
         let theme = Theme::dark();
-        let mut folds = FoldState::new(&doc);
+        let mut folds = doc.fold_state();
         folds.collapse(0);
         let opts = LayoutOptions::new(40, &theme).with_folds(&folds);
         let out = Layout::build(&doc, &opts).to_plain_text();
@@ -1105,7 +1110,8 @@ mod tests {
 
     #[test]
     fn every_line_knows_its_node_and_offsets_are_stable() {
-        let doc = parse("# Title\n\npara one\n\n- item\n");
+        let doc = DocumentModel::markdown(parse("# Title\n\npara one\n\n- item\n"));
+        let markdown = doc.as_markdown().expect("a Markdown document");
         let theme = Theme::dark();
         let opts = LayoutOptions::new(40, &theme);
         let tree = Layout::build(&doc, &opts);
@@ -1116,16 +1122,19 @@ mod tests {
         assert_eq!(tree.heading_lines().len(), 1);
         assert!(tree.max_width() > 0);
         for line in &tree.lines {
-            assert!(doc.node(line.node).is_some(), "unknown node {}", line.node);
+            assert!(
+                markdown.node(line.node).is_some(),
+                "unknown node {}",
+                line.node
+            );
         }
     }
 
     #[test]
     fn search_matches_are_highlighted_in_prose_and_code() {
         let src = "# needle\n\na needle here\n\n```rust\nlet needle = 1;\n```\n";
-        let doc = parse(src);
-        let idx = SearchIndex::build(&doc);
-        let matches = idx.find("needle", false);
+        let doc = DocumentModel::markdown(parse(src));
+        let matches = doc.search_index().find("needle", false);
         let theme = Theme::dark();
         let opts = LayoutOptions::new(60, &theme).with_matches(&matches);
         let tree = Layout::build(&doc, &opts);
@@ -1153,7 +1162,7 @@ mod tests {
                 DiagramContent::Lines(vec!["┌───┐".into(), "│ A │".into()])
             }
         }
-        let doc = parse("```mermaid\ngraph LR\nA --> B\n```\n");
+        let doc = DocumentModel::markdown(parse("```mermaid\ngraph LR\nA --> B\n```\n"));
         let theme = Theme::dark();
         let fake = Fake;
         let opts = LayoutOptions::new(40, &theme).with_diagrams(&fake);
@@ -1177,7 +1186,7 @@ mod tests {
                 }
             }
         }
-        let doc = parse("```mermaid\ngraph LR\nA --> B\n```\n");
+        let doc = DocumentModel::markdown(parse("```mermaid\ngraph LR\nA --> B\n```\n"));
         let theme = Theme::dark();
         let fake = Fake;
         let opts = LayoutOptions::new(40, &theme).with_diagrams(&fake);
@@ -1244,7 +1253,7 @@ mod tests {
         // and the test proves nothing about lazy highlighting.
         let mut exercised_deferred = false;
         for (name, source) in fixtures() {
-            let doc = parse(&source);
+            let doc = DocumentModel::markdown(parse(&source));
             for width in [40usize, 80, 120] {
                 let eager = Layout::build(&doc, &LayoutOptions::new(width, &theme));
 
@@ -1296,7 +1305,7 @@ mod tests {
     #[test]
     fn realizing_a_range_leaves_the_rest_deferred() {
         let src = "```rust\nfn a() {}\n```\n\ntext\n\n```rust\nfn b() {}\n```\n";
-        let doc = parse(src);
+        let doc = DocumentModel::markdown(parse(src));
         let theme = Theme::dark();
         let mut opts = LayoutOptions::new(40, &theme);
         opts.lazy_code = true;
@@ -1314,15 +1323,16 @@ mod tests {
         let theme = Theme::dark();
         for (name, source) in fixtures() {
             let doc = parse(&source);
+            let model = DocumentModel::markdown(doc.clone());
             if doc.sections.is_empty() {
                 continue;
             }
             for section in 0..doc.sections.len() {
-                let mut folds = FoldState::new(&doc);
+                let mut folds = FoldState::from_parents(doc.fold_parents());
                 let engine = Layout::new();
                 let mut opts = LayoutOptions::new(80, &theme);
                 opts.folds = Some(&folds);
-                let mut tree = engine.layout(&doc, &opts);
+                let mut tree = engine.layout(&model, &opts);
 
                 folds.collapse(section);
                 let Some(s) = doc.sections.get(section) else {
@@ -1348,7 +1358,7 @@ mod tests {
                 let spliced = engine.relayout_nodes(&doc, &opts, &mut tree, first, last - first);
                 assert!(spliced, "{name}#{section}: splice applies");
 
-                let fresh = engine.layout(&doc, &opts);
+                let fresh = engine.layout(&model, &opts);
                 assert_eq!(
                     tree.to_plain_text(),
                     fresh.to_plain_text(),
@@ -1375,13 +1385,14 @@ mod tests {
     #[test]
     fn splicing_round_trips_through_collapse_and_expand() {
         let doc = parse("# A\n\nbody\n\n## A1\n\nmore\n\n# B\n\nb\n");
+        let model = DocumentModel::markdown(doc.clone());
         let theme = Theme::dark();
         let engine = Layout::new();
-        let mut folds = FoldState::new(&doc);
+        let mut folds = FoldState::from_parents(doc.fold_parents());
         let mut opts = LayoutOptions::new(40, &theme);
         opts.folds = Some(&folds);
-        let before = engine.layout(&doc, &opts).to_plain_text();
-        let mut tree = engine.layout(&doc, &opts);
+        let before = engine.layout(&model, &opts).to_plain_text();
+        let mut tree = engine.layout(&model, &opts);
 
         let s = doc.sections.first().expect("a section");
         let first = doc.nodes.partition_point(|n| n.id < s.heading);
@@ -1406,7 +1417,7 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/readme.md"),
         )
         .unwrap();
-        let doc = parse(&src);
+        let doc = DocumentModel::markdown(parse(&src));
         let theme = Theme::dark();
         let opts = LayoutOptions::new(80, &theme);
         let engine = Layout::new();

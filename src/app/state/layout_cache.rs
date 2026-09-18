@@ -554,6 +554,8 @@ mod tests {
             headings: a.tree().heading_lines().to_vec(),
             first_lines: a
                 .doc
+                .as_markdown()
+                .expect("a Markdown document")
                 .walk()
                 .filter_map(|n| a.tree().first_line_of(n.id).map(|l| (n.id, l)))
                 .collect(),
@@ -583,7 +585,7 @@ mod tests {
             let mut rebuilt = app_with(BIG, (60, 10));
             for app in [&mut spliced, &mut rebuilt] {
                 app.scroll_to(0);
-                if let Some(s) = app.doc.sections.get(section) {
+                if let Some(s) = md(app).sections.get(section) {
                     app.cursor = s.heading;
                 }
             }
@@ -626,11 +628,11 @@ mod tests {
         // Folding the section at the cursor pins its heading to the top of the
         // screen — and the anchor follows it exactly, which is what the splice
         // must not break.
-        if let Some(s) = a.doc.sections.first() {
+        if let Some(s) = md(&a).sections.first() {
             a.cursor = s.heading;
         }
         a.apply(Action::CollapseFold);
-        let heading = a.doc.sections[0].heading;
+        let heading = md(&a).sections[0].heading;
         assert_eq!(a.anchor(), (heading, 0));
         assert_eq!(a.tree().first_line_of(heading), Some(a.top_line()));
         let _ = anchor;
@@ -705,7 +707,7 @@ mod tests {
         }
         code(&mut a, KeyCode::Enter);
         a.prepare_frame();
-        if let Some(s) = a.doc.sections.first() {
+        if let Some(s) = md(&a).sections.first() {
             a.cursor = s.heading;
         }
         a.apply(Action::CollapseFold);

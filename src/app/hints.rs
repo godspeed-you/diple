@@ -11,10 +11,10 @@
 //! `[keys]` bindings are reflected. An action the user has unbound produces no
 //! row at all rather than a row with an empty key.
 
-use crate::document::{DocumentCapabilities, DocumentKind};
 use crate::app::state::Mode;
 use crate::config::actions::Action;
 use crate::config::keys::KeyMap;
+use crate::document::{DocumentCapabilities, DocumentKind};
 use crate::render::terminal::{HintGroup, HintRow};
 
 /// Default sidebar width in columns, capped to a third of the screen.
@@ -584,7 +584,12 @@ mod tests {
         );
         assert_eq!(
             labels(&g, "Headings"),
-            vec!["next/prev".to_string(), "same level".to_string()]
+            vec![
+                "next/prev".to_string(),
+                "same level".to_string(),
+                "out/in".to_string(),
+            ],
+            "parent/child join the pairs spec §12.4 asks the hints to offer"
         );
         assert_eq!(
             g.iter()
@@ -679,7 +684,7 @@ mod tests {
         let map = KeyMap::with_defaults();
         let g = groups(
             &HintContext {
-                cursor_on_heading: true,
+                cursor_on_structural: true,
                 link_in_view: true,
                 ..HintContext::default()
             },

@@ -60,15 +60,6 @@ impl TocState {
         }
     }
 
-    /// Forget the derived entries; the next [`TocState::ensure`] rebuilds them.
-    pub(crate) fn invalidate(&mut self) {
-        self.entries.clear();
-        self.built = false;
-        self.selected = 0;
-        self.scroll = 0;
-        self.h_scroll = 0;
-    }
-
     /// Number of entries.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
@@ -140,9 +131,7 @@ impl TocState {
         if let Some(exact) = self.index_of_node(node) {
             return Some(exact);
         }
-        self.entries
-            .iter()
-            .rposition(|e| e.node <= node)
+        self.entries.iter().rposition(|e| e.node <= node)
     }
 
     /// Move the selection by `delta` entries, clamped.
@@ -206,10 +195,6 @@ mod tests {
         toc.ensure(&doc);
         assert_eq!(toc.len(), 4);
         // Deriving twice costs nothing and changes nothing.
-        toc.ensure(&doc);
-        assert_eq!(toc.len(), 4);
-        toc.invalidate();
-        assert!(toc.is_empty());
         toc.ensure(&doc);
         assert_eq!(toc.len(), 4);
     }

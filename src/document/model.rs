@@ -221,9 +221,7 @@ impl DocumentModel {
             DocumentModel::Markdown(doc) => doc
                 .node(node)
                 .is_some_and(|n| matches!(n.kind, markdown::NodeKind::Heading(_))),
-            DocumentModel::Structured(doc) => {
-                doc.node(node).is_some_and(|n| n.is_container())
-            }
+            DocumentModel::Structured(doc) => doc.node(node).is_some_and(|n| n.is_container()),
         }
     }
 
@@ -389,7 +387,7 @@ mod tests {
 
     fn json_doc(src: &str) -> DocumentModel {
         DocumentModel::structured(
-            json::parse(SourceDocument::new("t.json", src)).expect("valid JSON"),
+            json::parse(&SourceDocument::new("t.json", src)).expect("valid JSON"),
         )
     }
 

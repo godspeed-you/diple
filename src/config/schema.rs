@@ -7,10 +7,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::document::FormatRequest;
+
 /// Top-level configuration (`~/.config/diple/config.toml`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// How a document is read: `auto`, `markdown`, `json`, `yaml`.
+    ///
+    /// First in the file because it decides what the document *is*; every
+    /// other key decides how it looks.
+    pub format: FormatMode,
     /// Colour theme: `auto`, `dark`, `light` or a named theme.
     pub theme: Theme,
     /// Colour output: `auto`, `always`, `never`.
@@ -48,6 +55,8 @@ pub struct Config {
     pub links: LinksConfig,
     /// Mermaid rendering options.
     pub mermaid: MermaidConfig,
+    /// Structured-document (JSON, YAML) rendering options.
+    pub structured: StructuredConfig,
     /// Keybinding overrides: action name → key spec(s).
     pub keys: BTreeMap<String, KeyBinding>,
 }
@@ -55,6 +64,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            format: FormatMode::Auto,
             theme: Theme::Auto,
             color: ColorMode::Auto,
             mouse: true,
@@ -68,6 +78,7 @@ impl Default for Config {
             code: CodeConfig::default(),
             links: LinksConfig::default(),
             mermaid: MermaidConfig::default(),
+            structured: StructuredConfig::default(),
             keys: BTreeMap::new(),
         }
     }
@@ -151,6 +162,38 @@ impl Default for MermaidConfig {
             backend: MermaidBackend::Auto,
             images: ImageMode::Auto,
             mmdc_command: "mmdc".to_string(),
+        }
+    }
+}
+
+/// `[structured]` section — how JSON and YAML documents are presented.
+///
+/// Markdown ignores every key here: they describe a nesting tree, which is
+/// what a structured document has and prose does not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StructuredConfig {
+    /// Columns one nesting level is indented by.
+    ///
+    /// Two is the convention both formats already write themselves, and it
+    /// keeps a deeply nested document inside the measure; eight would push a
+    /// Kubernetes manifest off the right of the screen.
+    pub indent: u8,
+    /// When the path of the selected node is shown.
+    pub path: PathMode,
+    /// Show `[0]`-style indices on sequence items.
+    pub show_indices: bool,
+    /// Summarise what a collapsed container holds (`{3 members}`).
+    pub collapsed_summary: bool,
+}
+
+impl Default for StructuredConfig {
+    fn default() -> Self {
+        Self {
+            indent: 2,
+            path: PathMode::Auto,
+            show_indices: true,
+            collapsed_summary: true,
         }
     }
 }
@@ -283,6 +326,48 @@ string_enum! {
 }
 
 string_enum! {
+    /// How a document is read.
+    ///
+    /// The configuration's counterpart to
+    /// [`FormatRequest`](crate::document::FormatRequest): the document layer
+    /// owns what the formats *are*, and this enum is how the file and the
+    /// `--format` flag name one. [`FormatMode::request`] is the only bridge
+    /// between the two, so the spellings cannot drift apart unnoticed.
+    FormatMode {
+        /// Extension, then content, then Markdown.
+        #[default] Auto => "auto",
+        /// Always read as Markdown.
+        Markdown => "markdown",
+        /// Always read as strict JSON.
+        Json => "json",
+        /// Always read as YAML.
+        Yaml => "yaml",
+    }
+}
+
+impl FormatMode {
+    /// What the document layer should do with this setting.
+    pub fn request(self) -> FormatRequest {
+        // Every `FormatMode` spelling is a `FormatRequest` spelling; the test
+        // below holds that true, so the fallback is unreachable rather than a
+        // silent second opinion about what `json` means.
+        FormatRequest::parse(self.as_str()).unwrap_or(FormatRequest::Auto)
+    }
+}
+
+string_enum! {
+    /// When the path of the selected structured node is shown.
+    PathMode {
+        /// Show it when there is room and the format has paths.
+        #[default] Auto => "auto",
+        /// Always show it.
+        Always => "always",
+        /// Never show it.
+        Never => "never",
+    }
+}
+
+string_enum! {
     /// Table layout mode.
     TableMode {
         /// Choose per table.
@@ -370,4 +455,47 @@ pub enum ConfigError {
         /// What would have been accepted.
         expected: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::DocumentKind;
+
+    /// The configuration names the formats the document layer names. A value
+    /// the file accepts but `FormatRequest` does not would quietly become
+    /// `auto`, which is the one failure mode `--format` exists to prevent.
+    #[test]
+    fn every_format_value_reaches_the_document_layer() {
+        assert_eq!(
+            FormatMode::values(),
+            crate::document::format::FORMAT_VALUES,
+            "the file and `--format` must accept the same words"
+        );
+        assert_eq!(FormatMode::Auto.request(), FormatRequest::Auto);
+        assert_eq!(
+            FormatMode::Markdown.request(),
+            FormatRequest::Fixed(DocumentKind::Markdown)
+        );
+        assert_eq!(
+            FormatMode::Json.request(),
+            FormatRequest::Fixed(DocumentKind::Json)
+        );
+        assert_eq!(
+            FormatMode::Yaml.request(),
+            FormatRequest::Fixed(DocumentKind::Yaml)
+        );
+    }
+
+    /// A file written before 2.0 knows none of these keys, and must still
+    /// load into exactly the built-in behaviour (§26.2).
+    #[test]
+    fn the_structured_defaults_are_the_conventional_ones() {
+        let config = Config::default();
+        assert_eq!(config.format, FormatMode::Auto);
+        assert_eq!(config.structured.indent, 2);
+        assert_eq!(config.structured.path, PathMode::Auto);
+        assert!(config.structured.show_indices);
+        assert!(config.structured.collapsed_summary);
+    }
 }

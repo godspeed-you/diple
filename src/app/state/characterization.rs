@@ -307,13 +307,13 @@ fn links_are_selectable_and_reported() {
 #[test]
 fn the_document_title_comes_from_the_first_h1() {
     let app = open();
-    assert_eq!(app.doc.title.as_deref(), Some("Title"));
+    assert_eq!(app.doc.title(), Some("Title"));
 }
 
 #[test]
 fn a_document_without_headings_still_renders_and_reports_the_absence() {
     let mut app = app_sized("just text\n\nmore text\n", (40, 10));
-    assert!(app.tree().len() > 0);
+    assert!(!app.tree().is_empty());
     app.apply(Action::NextHeading);
     assert_eq!(app.message(), Some("document has no headings"));
     app.apply(Action::ToggleToc);
@@ -331,6 +331,8 @@ fn markdown_keeps_its_own_node_kinds() {
     );
     let kinds: Vec<String> = app
         .doc
+        .as_markdown()
+        .expect("a Markdown document")
         .walk()
         .map(|n| match &n.kind {
             NodeKind::Heading(_) => "heading".to_string(),

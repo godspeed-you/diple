@@ -673,6 +673,7 @@ mod tests {
             Capabilities::default(),
             None,
             false,
+            FormatRequest::Auto,
         )
     }
 

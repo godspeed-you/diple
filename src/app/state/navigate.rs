@@ -216,7 +216,7 @@ impl App {
 
     /// Scroll to a node's row and put the cursor on it.
     pub(super) fn goto_node(&mut self, node: NodeId) {
-        if let Some(line) = self.tree.first_line_of(node) {
+        if let Some(line) = self.tree.landmark_line_of(node) {
             self.scroll_with_context(line);
             self.place_cursor(node);
         }
@@ -473,6 +473,7 @@ mod tests {
     use crate::app::state::test_support::*;
     use crate::app::state::HEADING_CONTEXT;
     use crate::config::actions::Action;
+    use crate::document::markdown::NodeKind;
     use crossterm::event::KeyCode;
 
     #[test]
@@ -485,7 +486,7 @@ mod tests {
                 if let Some(crate::document::markdown::Node {
                     kind: NodeKind::Heading(h),
                     ..
-                }) = a.doc.node(node)
+                }) = md(&a).node(node)
                 {
                     visited.push(h.text.clone());
                 }
@@ -493,7 +494,7 @@ mod tests {
         }
         assert_eq!(visited, vec!["Title", "Alpha", "Alpha Child", "Beta"]);
         a.apply(Action::PreviousHeading);
-        let node = a.cursor_node().and_then(|n| a.doc.node(n));
+        let node = a.cursor_node().and_then(|n| md(&a).node(n));
         assert!(
             matches!(node.map(|n| &n.kind), Some(NodeKind::Heading(h)) if h.text == "Alpha Child")
         );
@@ -505,13 +506,13 @@ mod tests {
         a.apply(Action::NextHeading); // Title (H1)
         a.apply(Action::NextHeading); // Alpha (H2)
         a.apply(Action::NextHeadingSameLevel);
-        let node = a.cursor_node().and_then(|n| a.doc.node(n));
+        let node = a.cursor_node().and_then(|n| md(&a).node(n));
         assert!(
             matches!(node.map(|n| &n.kind), Some(NodeKind::Heading(h)) if h.text == "Beta"),
             "H2 → H2 skipped the H3, got {node:?}"
         );
         a.apply(Action::PreviousHeadingSameLevel);
-        let node = a.cursor_node().and_then(|n| a.doc.node(n));
+        let node = a.cursor_node().and_then(|n| md(&a).node(n));
         assert!(matches!(node.map(|n| &n.kind), Some(NodeKind::Heading(h)) if h.text == "Alpha"));
     }
 
@@ -638,7 +639,7 @@ mod tests {
     fn internal_anchor_links_jump_to_the_right_node() {
         let mut a = app();
         a.jump_to_anchor("#alpha");
-        let node = a.doc.anchors.resolve("alpha").expect("anchor");
+        let node = md(&a).anchors.resolve("alpha").expect("anchor");
         let line = a.tree().first_line_of(node).expect("visible");
         assert_eq!(a.top_line(), line.saturating_sub(HEADING_CONTEXT));
         a.jump_to_anchor("#does-not-exist");

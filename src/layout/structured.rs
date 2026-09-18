@@ -127,14 +127,40 @@ impl<'a> Builder<'a> {
 
     fn run(&mut self) {
         let roots: Vec<NodeId> = self.doc.roots().iter().map(|r| r.node).collect();
+        let last_root = roots.last().copied();
         for root in roots {
             let start = self.lines.len();
             self.node(root);
+            // A comment after the last node still belongs to the document the
+            // reader is looking at (spec §10.3), so it is drawn rather than
+            // only indexed. Its rows join the last root's span, which keeps
+            // the span table tiling the tree contiguously for the splice.
+            if Some(root) == last_root {
+                self.trailing_comments(root);
+            }
             self.spans.push(NodeSpan {
                 node: root,
                 start,
                 len: self.lines.len() - start,
             });
+        }
+    }
+
+    /// Comments written after the last node of the stream, at the left margin.
+    ///
+    /// They are attributed to `node` — the last root — because a rendered row
+    /// must name a node for the viewport anchor and the search highlight to
+    /// work, and that is also the node they were indexed against.
+    fn trailing_comments(&mut self, node: NodeId) {
+        let ids: Vec<usize> = self.doc.trailing_comments().to_vec();
+        for id in ids {
+            let Some(comment) = self.doc.comment(id) else {
+                continue;
+            };
+            let text = format!("#{}", comment.text);
+            let mut row = self.row(node, 0, false);
+            row.push(&text, self.theme.structured.comment);
+            self.push(row, LineKind::Text);
         }
     }
 
@@ -144,7 +170,7 @@ impl<'a> Builder<'a> {
     /// whoever wrote it, and a recursive walk would turn a crafted file into a
     /// stack overflow.
     fn node(&mut self, node: NodeId) {
-        self.depth_offset = self.depth_offset_for(node);
+        self.depth_offset = self.depth_offset();
         let mut stack = vec![node];
         while let Some(id) = stack.pop() {
             let Some(current) = self.doc.node(id) else {
@@ -154,7 +180,6 @@ impl<'a> Builder<'a> {
                 continue;
             }
             if current.parent.is_none() {
-                self.depth_offset = self.depth_offset_for(id);
                 self.root_rows(id);
             } else {
                 self.entry_rows(id);
@@ -172,38 +197,18 @@ impl<'a> Builder<'a> {
 
     /// How many indent levels to subtract so that the outermost visible row
     /// sits at the left margin.
-    fn depth_offset_for(&self, node: NodeId) -> usize {
-        let Some(root) = self.root_of(node) else {
-            return 0;
-        };
-        match self.doc.kind() {
-            // JSON shows its root brace, so its members are indented under it.
-            DocumentKind::Json => 0,
-            // YAML shows a document row only when there is more than one
-            // document to tell apart; a single document's entries start at
-            // the margin, the way the file does.
-            _ => {
-                if self.doc.roots().len() > 1 {
-                    0
-                } else {
-                    let _ = root;
-                    1
-                }
-            }
+    ///
+    /// The same question as [`StructuredDocument::shows_root_row`], read as a
+    /// margin: a root that has a row indents its members under it, and a root
+    /// that has none lets them start where the file starts. It is a property
+    /// of the document rather than of a node, so every root in a stream gets
+    /// the same one.
+    fn depth_offset(&self) -> usize {
+        if self.doc.shows_root_row() {
+            0
+        } else {
+            1
         }
-    }
-
-    fn root_of(&self, node: NodeId) -> Option<NodeId> {
-        let mut cur = node;
-        let mut guard = 0usize;
-        while let Some(parent) = self.doc.parent(cur) {
-            cur = parent;
-            guard += 1;
-            if guard > self.doc.node_count() {
-                break;
-            }
-        }
-        Some(cur)
     }
 
     fn hidden(&self, node: NodeId) -> bool {
@@ -235,12 +240,7 @@ impl<'a> Builder<'a> {
     /// marker when the stream has several, and — for JSON — the opening
     /// brace of the document itself.
     fn root_rows(&mut self, node: NodeId) {
-        let Some(index) = self
-            .doc
-            .roots()
-            .iter()
-            .position(|r| r.node == node)
-        else {
+        let Some(index) = self.doc.roots().iter().position(|r| r.node == node) else {
             return;
         };
         let directives: Vec<String> = self.doc.roots()[index]
@@ -255,25 +255,21 @@ impl<'a> Builder<'a> {
         }
         self.comments_above(node);
 
-        let multi = self.doc.roots().len() > 1;
-        if self.doc.kind() == DocumentKind::Json || multi {
-            let mut row = self.row(node, 0, false);
-            if multi {
-                row.push("--- ", self.theme.structured.punctuation);
-                row.push(&self.doc.label(node), self.theme.structured.key);
-            }
-            self.value_part(&mut row, node, multi);
-            self.finish_row(row, node);
-        } else if !self
-            .doc
-            .node(node)
-            .is_some_and(|n| n.kind.is_container())
-        {
-            // A YAML document that is just a scalar still needs a row.
-            let mut row = self.row(node, 0, false);
-            self.value_part(&mut row, node, false);
-            self.finish_row(row, node);
+        // Whether the root is shown at all is the model's answer, not this
+        // engine's: a root with no row is also not a cursor stop, and the two
+        // facts have to be the same fact. A single-document YAML stream
+        // elides it (spec §5.2); JSON and a multi-document stream do not.
+        if !self.doc.has_row(node) {
+            return;
         }
+        let multi = self.doc.roots().len() > 1;
+        let mut row = self.row(node, 0, false);
+        if multi {
+            row.push("--- ", self.theme.structured.punctuation);
+            row.push(&self.doc.label(node), self.theme.structured.key);
+        }
+        self.value_part(&mut row, node, multi);
+        self.finish_row(row, node);
     }
 
     /// The rows one mapping entry or sequence item contributes.
@@ -345,9 +341,15 @@ impl<'a> Builder<'a> {
             crate::document::structured::NodeRelation::SequenceItem { index } => {
                 if self.opts.show_indices {
                     row.push(&format!("[{index}]"), self.theme.structured.index);
-                    row.push(if yaml { " " } else { ": " }, self.theme.structured.punctuation);
+                    row.push(
+                        if yaml { " " } else { ": " },
+                        self.theme.structured.punctuation,
+                    );
                 } else {
-                    row.push(if yaml { "- " } else { "" }, self.theme.structured.punctuation);
+                    row.push(
+                        if yaml { "- " } else { "" },
+                        self.theme.structured.punctuation,
+                    );
                 }
             }
             crate::document::structured::NodeRelation::Root { .. } => {}
@@ -378,7 +380,6 @@ impl<'a> Builder<'a> {
             }
             StructuredNodeKind::Scalar(value) => {
                 self.scalar_part(row, node, value, labelled);
-                return;
             }
             StructuredNodeKind::Mapping | StructuredNodeKind::Sequence => {
                 self.container_part(row, node, current.child_count, labelled);
@@ -434,7 +435,12 @@ impl<'a> Builder<'a> {
             let mut header = std::mem::replace(row, self.row(node, 0, false));
             if let Some((text, style, base)) = right {
                 header.push("  ", Style::new());
-                header.push_matched(&text, style, self.field_matches(node, MatchField::Comment), base);
+                header.push_matched(
+                    &text,
+                    style,
+                    self.field_matches(node, MatchField::Comment),
+                    base,
+                );
             }
             self.push(header, LineKind::Text);
             let mut base = 0usize;
@@ -472,10 +478,7 @@ impl<'a> Builder<'a> {
     fn quote_strings(&self, style: ScalarStyle) -> bool {
         match self.doc.kind() {
             DocumentKind::Json => true,
-            _ => matches!(
-                style,
-                ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
-            ),
+            _ => matches!(style, ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted),
         }
     }
 
@@ -564,11 +567,7 @@ impl<'a> Builder<'a> {
         let foldable = self.doc.node(node).and_then(|n| n.fold).is_some();
         let kind = if foldable && self.collapsed(node) {
             LineKind::FoldedMarker
-        } else if self
-            .doc
-            .node(node)
-            .is_some_and(|n| n.kind.is_container())
-        {
+        } else if self.doc.node(node).is_some_and(|n| n.kind.is_container()) {
             let depth = self.indent_of(node).min(u8::MAX as usize) as u8;
             LineKind::Structural(depth)
         } else {
@@ -648,7 +647,7 @@ impl Row {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{load, FormatRequest, SourceDocument};
+    use crate::document::{load, FoldState, FormatRequest, SourceDocument};
     use crate::render::theme::Theme;
 
     fn structured(name: &str, src: &str) -> StructuredDocument {
@@ -733,11 +732,88 @@ mod tests {
             assert!(doc.node(line.node).is_some(), "{line:?}");
         }
         // And the tree can find a node's first row again — that round trip is
-        // what the viewport anchor and every jump rely on.
+        // what the viewport anchor and every jump rely on. Every node has a
+        // row except the root of this single-document YAML stream, which
+        // spec §5.2 deliberately does not show; the cursor starts below it
+        // and never reaches it.
         for node in doc.nodes() {
-            let first = tree.first_line_of(node.id);
-            assert!(first.is_some(), "node {} has no row", node.id);
+            assert_eq!(
+                tree.first_line_of(node.id).is_some(),
+                doc.has_row(node.id),
+                "node {}",
+                node.id
+            );
         }
+        assert!(!doc.has_row(0), "a lone YAML document shows no root row");
+        assert_eq!(doc.first_semantic(), Some(1));
+        assert_eq!(tree.node_at(0), Some(1), "the first row is `apiVersion`");
+
+        // One node, one contiguous run of rows: a second run would break the
+        // viewport anchor, which walks forward while the node id matches.
+        let mut seen = std::collections::HashSet::new();
+        let mut previous: Option<NodeId> = None;
+        for line in &tree.lines {
+            if previous != Some(line.node) {
+                assert!(seen.insert(line.node), "node {} has a split run", line.node);
+                previous = Some(line.node);
+            }
+        }
+    }
+
+    #[test]
+    fn json_shows_its_root_brace_and_gives_every_node_a_row() {
+        let theme = Theme::dark();
+        let opts = LayoutOptions::new(80, &theme);
+        let doc = structured("t.json", JSON);
+        let tree = layout(&doc, &opts);
+        assert!(doc.shows_root_row());
+        for node in doc.nodes() {
+            assert!(
+                tree.first_line_of(node.id).is_some(),
+                "node {} has no row",
+                node.id
+            );
+        }
+        assert_eq!(tree.node_at(0), Some(0), "the root brace comes first");
+    }
+
+    #[test]
+    fn a_deep_document_is_laid_out_iteratively() {
+        // Far past any recursion budget: the layout walk keeps its own stack
+        // so a crafted file is a tall document rather than a crash.
+        let depth = 400usize;
+        let src = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let shown = rows("t.json", &src, None);
+        assert_eq!(shown.len(), depth + 1, "one row per array, then the scalar");
+        assert_eq!(shown[0], "[", "the root brace");
+        assert_eq!(shown[depth - 1].trim(), "[0]: [", "the innermost array");
+        assert_eq!(shown[depth].trim(), "[0]: 1");
+    }
+
+    #[test]
+    fn a_nested_fold_keeps_its_own_state_while_its_parent_is_collapsed() {
+        let doc = structured("t.json", JSON);
+        let mut folds = FoldState::from_parents(doc.fold_parents().to_vec());
+        let fold_of = |label: &str| {
+            doc.nodes()
+                .iter()
+                .find(|n| doc.label(n.id) == label)
+                .and_then(|n| n.fold)
+                .expect(label)
+        };
+        folds.collapse(fold_of("containers"));
+        folds.collapse(fold_of("spec"));
+        let shown = rows("t.json", JSON, Some(&folds));
+        assert!(shown.iter().any(|r| r.contains("spec: {2 members}")));
+        assert!(!shown.iter().any(|r| r.contains("containers")));
+
+        folds.expand(fold_of("spec"));
+        let shown = rows("t.json", JSON, Some(&folds));
+        assert!(
+            shown.iter().any(|r| r.contains("containers: [1 item]")),
+            "the inner fold survived its parent's round trip: {shown:?}"
+        );
+        assert!(!shown.iter().any(|r| r.contains("nginx:1.27")));
     }
 
     #[test]
@@ -752,9 +828,15 @@ mod tests {
             .expect("spec");
         folds.collapse(spec.fold.expect("foldable"));
         let shown = rows("t.json", JSON, Some(&folds));
-        assert!(shown.iter().any(|r| r.contains("spec: {2 members}")), "{shown:?}");
+        assert!(
+            shown.iter().any(|r| r.contains("spec: {2 members}")),
+            "{shown:?}"
+        );
         assert!(!shown.iter().any(|r| r.contains("replicas")), "{shown:?}");
-        assert!(shown.iter().any(|r| r.contains("metadata")), "siblings stay");
+        assert!(
+            shown.iter().any(|r| r.contains("metadata")),
+            "siblings stay"
+        );
         // The fold marker is on the collapsed row.
         assert!(shown.iter().any(|r| r.starts_with("\u{25b6}")), "{shown:?}");
     }
@@ -830,6 +912,22 @@ mod tests {
                 "replicas: 3  # minimum for HA",
                 "other: 1",
             ]
+        );
+    }
+
+    /// A comment after the last entry has no node to hang from, which is
+    /// exactly why it is easy to lose. Spec §10.3 says comments stay visible,
+    /// so this one is drawn as well as indexed.
+    #[test]
+    fn a_comment_after_the_last_entry_is_still_drawn() {
+        let src = "replicas: 3\n\n# nothing follows this\n";
+        let rendered = rows("t.yaml", src, None);
+        assert_eq!(rendered, ["replicas: 3", "# nothing follows this"]);
+
+        let doc = structured("t.yaml", src);
+        assert!(
+            !doc.search_index().find("nothing follows", false).is_empty(),
+            "and it is searchable too"
         );
     }
 

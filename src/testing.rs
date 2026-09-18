@@ -46,7 +46,9 @@ use crate::app::diagrams::DiagramProvider;
 use crate::app::state::{App, AppEnv, AppOptions};
 use crate::config::keys::KeyMap;
 use crate::config::Config;
-use crate::document::{parse, Document};
+use crate::document::markdown::{parse, Document};
+use crate::document::source::SourceDocument;
+use crate::document::{json, yaml, DocumentModel};
 use crate::layout::{Layout, LayoutOptions};
 use crate::render::primitives::RenderTree;
 use crate::render::theme::{ColorLevel, Theme};
@@ -55,6 +57,26 @@ use crate::terminal::capabilities::{detect_from, Capabilities, CapabilityOverrid
 /// Parse Markdown into a [`Document`].
 pub(crate) fn doc(src: &str) -> Document {
     parse(src)
+}
+
+/// Parse Markdown into a [`DocumentModel`] — what everything above the format
+/// boundary actually takes.
+pub(crate) fn model(src: &str) -> DocumentModel {
+    DocumentModel::markdown(parse(src))
+}
+
+/// Parse JSON into a [`DocumentModel`], panicking on invalid input.
+pub(crate) fn json_model(src: &str) -> DocumentModel {
+    DocumentModel::structured(
+        json::parse(&SourceDocument::new("test.json", src)).expect("valid JSON"),
+    )
+}
+
+/// Parse YAML into a [`DocumentModel`], panicking on invalid input.
+pub(crate) fn yaml_model(src: &str) -> DocumentModel {
+    DocumentModel::structured(
+        yaml::parse(&SourceDocument::new("test.yaml", src)).expect("valid YAML"),
+    )
 }
 
 /// The theme every layout helper here uses.
@@ -75,7 +97,7 @@ pub(crate) fn options(width: usize, theme: &Theme) -> LayoutOptions<'_> {
 
 /// Parse and lay out `src` at `width` with default options.
 pub(crate) fn render(src: &str, width: usize) -> RenderTree {
-    let document = doc(src);
+    let document = model(src);
     let theme = theme();
     Layout::build(&document, &options(width, &theme))
 }
@@ -123,7 +145,7 @@ pub(crate) fn caps(pairs: &[(&str, &str)]) -> Capabilities {
 /// [`AppEnv`] and [`AppOptions`], so a new field on either is a one-line
 /// change here rather than an edit in every test that builds an `App`.
 pub(crate) struct AppBuilder {
-    doc: Document,
+    doc: DocumentModel,
     config: Config,
     keymap: KeyMap,
     caps: Capabilities,
@@ -137,8 +159,13 @@ impl AppBuilder {
     /// A builder over the parsed `src`, with default configuration, the
     /// default keymap, no terminal capabilities and no diagram backend.
     pub(crate) fn new(src: &str) -> Self {
+        Self::over(model(src), "test.md")
+    }
+
+    /// A builder over an already-built document of any format.
+    pub(crate) fn over(doc: DocumentModel, filename: &str) -> Self {
         Self {
-            doc: doc(src),
+            doc,
             config: Config::default(),
             keymap: KeyMap::with_defaults(),
             caps: Capabilities::default(),
@@ -146,7 +173,7 @@ impl AppBuilder {
             color: ColorLevel::None,
             diagrams: DiagramProvider::source_only(),
             options: AppOptions {
-                filename: "test.md".to_string(),
+                filename: filename.to_string(),
                 size: (80, 24),
                 width_override: None,
                 debug: false,
@@ -221,4 +248,14 @@ pub(crate) fn app(src: &str) -> App {
 /// An [`App`] over `src` at a given terminal size.
 pub(crate) fn app_sized(src: &str, size: (u16, u16)) -> App {
     AppBuilder::new(src).size(size).build()
+}
+
+/// An [`App`] over JSON `src` at the default 80×24 size.
+pub(crate) fn json_app(src: &str) -> App {
+    AppBuilder::over(json_model(src), "test.json").build()
+}
+
+/// An [`App`] over YAML `src` at the default 80×24 size.
+pub(crate) fn yaml_app(src: &str) -> App {
+    AppBuilder::over(yaml_model(src), "test.yaml").build()
 }

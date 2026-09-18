@@ -104,7 +104,7 @@ impl App {
                 self.tree.max_width() > self.content_width()
             },
             link_in_view: self.link_in_view(),
-            capabilities: self.doc.capabilities(),
+            capabilities: self.capabilities(),
             format: self.doc.kind(),
             cursor_on_structural: self.cursor_on_structural(),
             near_diagram: self.near_diagram(),
@@ -216,6 +216,7 @@ mod tests {
     use super::*;
     use crate::app::state::test_support::*;
     use crate::config::actions::Action;
+    use crate::document::markdown::NodeKind;
 
     #[test]
     fn toc_selection_maps_to_the_right_section() {
@@ -225,10 +226,13 @@ mod tests {
         assert!(a.toc.open);
         a.apply(Action::ScrollDown);
         a.apply(Action::ScrollDown);
-        let section = a.toc.selected_section().expect("selection");
-        let heading = a.doc.heading_of(section).map(|h| h.text.clone());
+        let selected = a.toc.selected_node().expect("selection");
+        let heading = md(&a).node(selected).and_then(|n| match &n.kind {
+            NodeKind::Heading(h) => Some(h.text.clone()),
+            _ => None,
+        });
         a.apply(Action::Activate);
-        let at_top = a.cursor_node().and_then(|n| a.doc.node(n));
+        let at_top = a.cursor_node().and_then(|n| md(&a).node(n));
         assert!(
             matches!(at_top.map(|n| &n.kind), Some(NodeKind::Heading(h)) if Some(&h.text) == heading.as_ref()),
             "jumped to {heading:?}"
@@ -337,7 +341,7 @@ mod tests {
         assert!(!ctx.search_active);
 
         a.apply(Action::NextHeading);
-        assert!(a.hint_context().cursor_on_heading);
+        assert!(a.hint_context().cursor_on_structural);
 
         // Horizontal scrolling only when the tree really is wider than the
         // viewport: an unwrapped code block in a narrow terminal.
@@ -347,7 +351,8 @@ mod tests {
         // A search with matches turns the n/N rows on.
         let mut searched = app_with(DOC, (120, 24));
         searched.search.query = "needle".to_string();
-        searched.search.refresh(&searched.index);
+        let index = searched.doc.search_index().clone();
+        searched.search.refresh(&index);
         assert!(searched.hint_context().search_active);
     }
 
@@ -369,8 +374,7 @@ mod tests {
     #[test]
     fn mermaid_source_toggle_relayouts() {
         let mut a = app_with("# D\n\n```mermaid\ngraph LR\nA --> B\n```\n", (80, 20));
-        let node = a
-            .doc
+        let node = md(&a)
             .nodes
             .iter()
             .find(|n| matches!(n.kind, NodeKind::Mermaid(_)))
