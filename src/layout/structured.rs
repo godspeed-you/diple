@@ -40,10 +40,18 @@ use crate::document::{DocumentKind, Match, MatchField, NodeId};
 use crate::render::primitives::{LineKind, NodeSpan, RenderLine, RenderTree, StyledSpan};
 use crate::render::theme::{Style, Theme};
 
-use super::LayoutOptions;
+use super::{spans_width, LayoutOptions};
+use crate::util::unicode;
 
 /// Columns reserved for the fold marker in the interactive view.
 const MARKER_WIDTH: usize = 2;
+
+/// Columns a wrapped row must still have left for its content.
+///
+/// Below this the indentation has eaten the terminal, and wrapping would
+/// produce mostly blank rows; such a row is left long for the reader to scroll
+/// through horizontally instead.
+const MIN_WRAP_CONTENT: usize = 16;
 
 /// Lay out a whole structured document.
 pub fn layout(doc: &StructuredDocument, opts: &LayoutOptions<'_>) -> RenderTree {
@@ -522,10 +530,17 @@ impl<'a> Builder<'a> {
     // ---- row plumbing ----------------------------------------------------
 
     fn row(&self, node: NodeId, indent: usize, foldable: bool) -> Row {
+        // A wrapped row continues one level further in than the entry it
+        // belongs to, so a long value stays visibly *inside* its key rather
+        // than lining up with the next sibling.
+        let continuation = self.gutter()
+            + indent.saturating_mul(self.opts.structured_indent)
+            + self.opts.structured_indent;
         let mut row = Row {
             node,
             spans: Vec::new(),
             suppressed: false,
+            continuation,
         };
         if self.opts.folds.is_some() {
             let marker = if !foldable {
@@ -576,14 +591,49 @@ impl<'a> Builder<'a> {
         self.push(row, kind);
     }
 
+    /// Emit a finished row, wrapping it when the reader asked for wrapping
+    /// and it does not fit.
+    ///
+    /// Spec §15.5: a long scalar obeys the wrap setting like any other
+    /// content. The continuation rows belong to the same node, so they join
+    /// its contiguous run and the viewport anchor still names one thing.
     fn push(&mut self, row: Row, kind: LineKind) {
-        let Row { node, spans, .. } = row;
-        self.lines.push(RenderLine::new(node, kind, spans));
+        let Row {
+            node,
+            spans,
+            continuation,
+            ..
+        } = row;
+        let width = self.opts.width;
+        if !self.opts.wrap || width == 0 || spans_width(&spans) <= width {
+            self.lines.push(RenderLine::new(node, kind, spans));
+            return;
+        }
+        // Never spend more than half a row on the continuation indent, and
+        // when a node sits so deep that its own indentation leaves no room
+        // worth reading, do not wrap at all: horizontal scrolling is the
+        // honest answer there, and wrapping would turn a deeply nested
+        // document into pages of blank left margin.
+        if width.saturating_sub(continuation) < MIN_WRAP_CONTENT {
+            self.lines.push(RenderLine::new(node, kind, spans));
+            return;
+        }
+        let indent = continuation.min(width / 2);
+        let rest = width.saturating_sub(indent);
+        for (n, piece) in wrap_spans(spans, width, rest).into_iter().enumerate() {
+            let mut out = Vec::new();
+            if n > 0 && indent > 0 {
+                out.push(StyledSpan::new(" ".repeat(indent), Style::new()));
+            }
+            out.extend(piece);
+            // Only the first row is the landmark; a continuation is not a
+            // structural stop of its own.
+            let kind = if n == 0 { kind.clone() } else { LineKind::Text };
+            self.lines.push(RenderLine::new(node, kind, out));
+        }
     }
 
-    /// Reserved columns the content of a row starts after, for the callers
-    /// that need to know the usable width.
-    #[allow(dead_code)]
+    /// Reserved columns the content of a row starts after.
     fn gutter(&self) -> usize {
         if self.opts.folds.is_some() {
             MARKER_WIDTH
@@ -593,12 +643,79 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Break a row's spans into lines no wider than the given widths, preferring
+/// a space and hard-breaking a run that has none.
+///
+/// Style, link and search-match flags travel with the text, so a highlighted
+/// match that straddles the break stays highlighted on both rows.
+fn wrap_spans(
+    spans: Vec<StyledSpan>,
+    first_width: usize,
+    rest_width: usize,
+) -> Vec<Vec<StyledSpan>> {
+    let mut out: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut line: Vec<StyledSpan> = Vec::new();
+    let mut used = 0usize;
+    let mut limit = first_width.max(1);
+
+    for span in spans {
+        let mut rest = span.text.as_str();
+        while !rest.is_empty() {
+            let room = limit.saturating_sub(used);
+            if room == 0 {
+                out.push(std::mem::take(&mut line));
+                used = 0;
+                limit = rest_width.max(1);
+                continue;
+            }
+            let (head, tail) = unicode::split_at_width(rest, room);
+            if head.is_empty() {
+                // Not even one grapheme fits in what is left of this row.
+                out.push(std::mem::take(&mut line));
+                used = 0;
+                limit = rest_width.max(1);
+                continue;
+            }
+            // Prefer a word boundary, but only when it is not the whole row:
+            // breaking at column 0 would make no progress.
+            let cut = if tail.is_empty() {
+                head.len()
+            } else {
+                match head.rfind(' ') {
+                    Some(at) if at > 0 => at + 1,
+                    _ => head.len(),
+                }
+            };
+            let (text, remainder) = rest.split_at(cut);
+            line.push(StyledSpan {
+                text: text.to_string(),
+                style: span.style,
+                link: span.link,
+                search_match: span.search_match,
+            });
+            used += unicode::width(text);
+            rest = remainder;
+            if !rest.is_empty() {
+                out.push(std::mem::take(&mut line));
+                used = 0;
+                limit = rest_width.max(1);
+            }
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
 /// One row under construction.
 struct Row {
     node: NodeId,
     spans: Vec<StyledSpan>,
     /// Set when the row has already been emitted in pieces (a block scalar).
     suppressed: bool,
+    /// Columns a wrapped continuation of this row is indented by.
+    continuation: usize,
 }
 
 impl Row {
@@ -657,6 +774,16 @@ mod tests {
             .as_structured()
             .expect("a structured document")
             .clone()
+    }
+
+    fn rows_at(name: &str, src: &str, width: usize) -> Vec<String> {
+        let theme = Theme::dark();
+        let doc = structured(name, src);
+        layout(&doc, &LayoutOptions::new(width, &theme))
+            .lines
+            .iter()
+            .map(|l| l.to_text().trim_end().to_string())
+            .collect()
     }
 
     fn rows(name: &str, src: &str, folds: Option<&FoldState>) -> Vec<String> {
@@ -1030,12 +1157,77 @@ mod tests {
         assert!(!shown.contains('\u{7}'), "{shown:?}");
     }
 
+    /// A long value wraps under its key rather than running off the screen,
+    /// and the continuation is indented so the pair still reads as a pair
+    /// (spec §15.4, §15.5).
     #[test]
-    fn a_very_long_scalar_produces_one_row_not_one_per_byte() {
+    fn a_long_value_wraps_under_its_key() {
+        let src =
+            r#"{"url": "https://example.invalid/a/very/long/path/that/will/not/fit/in/forty"}"#;
+        let shown = rows_at("t.json", src, 40);
+        assert!(
+            shown.len() > 2,
+            "the value needed more than one row: {shown:?}"
+        );
+        assert!(shown[1].starts_with("  url: \"https://"), "{shown:?}");
+        assert!(
+            shown[2].starts_with("    ") && shown[2].trim_start().starts_with(|c: char| c != ' '),
+            "the continuation is indented past the key: {shown:?}"
+        );
+        assert!(
+            shown.iter().all(|l| crate::util::unicode::width(l) <= 40),
+            "every row fits: {shown:?}"
+        );
+        // Rejoining the rows gives the value back, so nothing was lost.
+        let joined: String = shown[1..].iter().map(|l| l.trim_start()).collect();
+        assert!(joined.contains("not/fit/in/forty"), "{joined}");
+    }
+
+    /// Indentation deeper than the terminal must not turn into pages of blank
+    /// left margin; such a row stays long and scrolls horizontally instead.
+    #[test]
+    fn a_row_with_no_room_left_to_wrap_into_is_left_long() {
+        let depth = 60usize;
+        let src = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let shown = rows_at("t.json", &src, 40);
+        assert_eq!(
+            shown.len(),
+            depth + 1,
+            "still one row per array: {}",
+            shown.len()
+        );
+        assert!(
+            crate::util::unicode::width(shown.last().unwrap()) > 40,
+            "the deepest row is wider than the terminal"
+        );
+    }
+
+    /// Spec §15.5: a long scalar obeys the wrap setting, and either way must
+    /// not turn into a row per byte.
+    #[test]
+    fn a_very_long_scalar_obeys_the_wrap_setting() {
         let long = "x".repeat(100_000);
         let src = format!("k: \"{long}\"\n");
-        let shown = rows("t.yaml", &src, None);
-        assert_eq!(shown.len(), 1);
+        let doc = structured("t.yaml", &src);
+        let theme = Theme::dark();
+
+        let mut unwrapped = LayoutOptions::new(80, &theme);
+        unwrapped.wrap = false;
+        let flat = layout(&doc, &unwrapped);
+        assert_eq!(flat.len(), 1, "no wrapping means one very wide row");
+        assert!(flat.max_width() > 100_000);
+
+        let wrapped = layout(&doc, &LayoutOptions::new(80, &theme));
+        assert!(
+            (1_200..1_400).contains(&wrapped.len()),
+            "one row per screenful, not per byte: {}",
+            wrapped.len()
+        );
+        assert!(wrapped.max_width() <= 80, "every row fits the terminal");
+        assert!(
+            wrapped.lines.iter().all(|l| l.node == flat.lines[0].node),
+            "the continuation rows are still the same node"
+        );
     }
 
     #[test]
