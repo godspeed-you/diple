@@ -1,0 +1,13 @@
+{
+  "plain": "Grüße aus München",
+  "cjk": "日本語のテキスト",
+  "emoji": "🚀 ✅ 🇩🇪",
+  "escaped": "line one\nline two\ttabbed",
+  "quotes": "she said \"hello\" and left",
+  "backslash": "C:\\Users\\reader\\notes.md",
+  "solidus": "a\/b",
+  "bmp-escape": "\u00e4\u00f6\u00fc",
+  "surrogate-pair": "\ud83d\ude00",
+  "control": "bell:\u0007 escape:\u001b",
+  "键": "unicode key"
+}

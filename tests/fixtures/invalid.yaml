@@ -1,0 +1,4 @@
+root:
+  key: value
+   bad_indent: this line is indented inconsistently
+  other: value

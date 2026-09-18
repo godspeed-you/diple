@@ -1,0 +1,15 @@
+explicit_string: !!str 2026
+explicit_int: !!int "42"
+explicit_float: !!float "3.5"
+explicit_bool: !!bool "true"
+explicit_null: !!null ""
+explicit_seq: !!seq
+  - one
+  - two
+explicit_map: !!map
+  key: value
+custom_tag: !secret
+  name: token
+  value: redacted
+local_scalar: !duration 30s
+binary: !!binary "R0lGODlhDAAMAIQAAP//9/X17unp5WZmZg=="
