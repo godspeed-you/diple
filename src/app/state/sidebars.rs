@@ -158,9 +158,20 @@ impl App {
         };
         self.reveal_node(node);
         self.ensure_layout();
-        if let Some(line) = self.tree.first_line_of(node) {
-            self.scroll_with_context(line);
-            self.place_cursor(node);
+        // A single-document YAML root is in the outline — it names the
+        // document — but deliberately has no row of its own, so going there
+        // means going to where the document starts.
+        let target = if self.tree.first_line_of(node).is_some() {
+            Some(node)
+        } else {
+            self.doc
+                .first_child(node)
+                .filter(|n| self.tree.first_line_of(*n).is_some())
+        };
+        if let Some(target) = target {
+            // Through `goto_node`, so that arriving from the outline puts the
+            // row in the same place `]` would.
+            self.goto_node(target);
         }
     }
 
@@ -217,6 +228,56 @@ mod tests {
     use crate::app::state::test_support::*;
     use crate::config::actions::Action;
     use crate::document::markdown::NodeKind;
+
+    /// The outline and `]` are two ways to ask for the same thing, so they
+    /// must put the reader in the same place.
+    #[test]
+    fn an_outline_jump_lands_where_a_structural_jump_lands() {
+        let mut outline = app();
+        outline.apply(Action::ToggleToc);
+        outline.apply(Action::ScrollDown);
+        let target = outline.toc.selected_node().expect("a selection");
+        outline.apply(Action::Activate);
+
+        let mut keyed = app();
+        while keyed.cursor_node() != Some(target) {
+            let before = keyed.cursor_node();
+            keyed.apply(Action::NextHeading);
+            assert_ne!(keyed.cursor_node(), before, "walked past {target}");
+        }
+        assert_eq!(outline.top_line(), keyed.top_line());
+        assert_eq!(outline.cursor_node(), keyed.cursor_node());
+    }
+
+    /// A single-document YAML root names the document but has no row of its
+    /// own, so selecting it in the outline goes to where the document starts
+    /// rather than doing nothing at all.
+    #[test]
+    fn an_outline_jump_to_a_rowless_root_goes_to_its_first_entry() {
+        let mut a = crate::testing::AppBuilder::over(
+            crate::testing::yaml_model("metadata:\n  name: nginx\nspec:\n  replicas: 3\n"),
+            "t.yaml",
+        )
+        .build();
+        a.apply(Action::ToggleToc);
+        // The cursor starts below the root, so walk up onto it.
+        a.apply(Action::ScrollUp);
+        assert_eq!(
+            a.toc.selected_node(),
+            Some(0),
+            "the root is the first entry"
+        );
+        assert!(
+            a.tree().first_line_of(0).is_none(),
+            "and it has no row of its own"
+        );
+        a.apply(Action::Activate);
+        assert_eq!(
+            a.cursor_node(),
+            Some(1),
+            "the cursor went to the first entry instead"
+        );
+    }
 
     #[test]
     fn toc_selection_maps_to_the_right_section() {
