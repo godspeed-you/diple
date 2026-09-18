@@ -57,7 +57,10 @@ use crate::app::workspace::Request;
 use crate::config::keys::KeyMap;
 use crate::config::schema::Osc8Mode;
 use crate::config::Config;
-use crate::document::{Document, FoldState, LinkId, NodeId, SearchIndex, SectionId};
+use crate::document::{
+    DocumentCapabilities, DocumentKind, DocumentModel, DocumentPath, FoldId, FoldState, LinkId,
+    NodeId,
+};
 use crate::layout::Layout;
 use crate::render::primitives::RenderTree;
 use crate::render::theme::{ColorLevel, Theme};
@@ -138,12 +141,10 @@ pub struct AppEnv {
 
 /// The interactive application state.
 pub struct App {
-    /// The parsed document.
-    pub(crate) doc: Document,
-    /// Per-section fold state.
+    /// The parsed document, whatever format it came from.
+    pub(crate) doc: DocumentModel,
+    /// Which foldable units are collapsed.
     pub(crate) folds: FoldState,
-    /// Full-text search index.
-    index: SearchIndex,
     /// Effective configuration.
     pub(crate) config: Config,
     /// Active key bindings.
@@ -220,7 +221,7 @@ impl std::fmt::Debug for App {
 impl App {
     /// Build the application state and lay the document out once.
     pub fn new(
-        doc: Document,
+        doc: DocumentModel,
         config: Config,
         keymap: KeyMap,
         env: AppEnv,
@@ -232,18 +233,16 @@ impl App {
             color,
             diagrams,
         } = env;
-        let folds = FoldState::new(&doc);
-        let index = SearchIndex::build(&doc);
-        let mut toc = TocState::new(&doc);
+        let folds = doc.fold_state();
+        let mut toc = TocState::new();
         toc.open = config.toc;
         let hints = HintsState {
             open: config.key_hints,
         };
-        let anchor = (doc.nodes.first().map(|n| n.id).unwrap_or(0), 0);
+        let anchor = (doc.first_semantic().unwrap_or(0), 0);
         let mut app = App {
             doc,
             folds,
-            index,
             config,
             keymap,
             caps,
@@ -606,11 +605,32 @@ impl App {
         }
     }
 
-    /// The section containing the cursor (current-section marker and
-    /// the target of the fold actions).
-    pub(crate) fn current_section(&self) -> Option<SectionId> {
+    /// The foldable unit containing the cursor: the target of the fold
+    /// actions, and what the outline's current-entry marker follows.
+    ///
+    /// For Markdown that is the section the cursor is in; for JSON and YAML
+    /// the container it sits in. Asking the document rather than matching on
+    /// the format is what makes `za` mean the analogous thing everywhere.
+    pub(crate) fn current_fold(&self) -> Option<FoldId> {
         let node = self.cursor_node()?;
-        self.doc.section_of(node)
+        self.doc.fold_at(node)
+    }
+
+    /// What this document supports; the key hints and the help overlay ask
+    /// before offering an action.
+    pub(crate) fn capabilities(&self) -> DocumentCapabilities {
+        self.doc.capabilities()
+    }
+
+    /// Which format the document was read as, for the status line.
+    pub(crate) fn format(&self) -> DocumentKind {
+        self.doc.kind()
+    }
+
+    /// The semantic path of the node at the cursor, for the formats that have
+    /// one.
+    pub(crate) fn cursor_path(&self) -> Option<DocumentPath> {
+        self.doc.path(self.cursor_node()?)
     }
 
     // -- scrolling --------------------------------------------------------

@@ -40,15 +40,19 @@ pub use workspace::Workspace;
 /// and it has to hold for a document opened with `:open` just as it does for
 /// the one named on the command line.
 pub fn diagram_provider(
-    doc: &crate::document::Document,
+    doc: &crate::document::DocumentModel,
     config: &crate::config::Config,
     caps: &crate::terminal::Capabilities,
     width: usize,
 ) -> DiagramProvider {
-    use crate::document::NodeKind;
-    let has_diagrams = doc
-        .walk()
-        .any(|node| matches!(node.kind, NodeKind::Mermaid(_)));
+    use crate::document::markdown::NodeKind;
+    // Only Markdown has Mermaid fences, so a JSON or YAML document skips the
+    // probe for the same reason a Markdown document without a diagram does.
+    let has_diagrams = doc.as_markdown().is_some_and(|markdown| {
+        markdown
+            .walk()
+            .any(|node| matches!(node.kind, NodeKind::Mermaid(_)))
+    });
     if !has_diagrams {
         return DiagramProvider::source_only();
     }

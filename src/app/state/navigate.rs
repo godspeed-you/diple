@@ -22,7 +22,8 @@
 use std::process::{Command, Stdio};
 
 use super::{App, Mode};
-use crate::document::{LinkId, LinkKind, NodeId, NodeKind, SectionId};
+use crate::document::markdown::LinkKind;
+use crate::document::{FoldId, LinkId, NodeId};
 
 /// Which fold operation a key requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,14 +45,14 @@ impl App {
         self.ensure_layout();
     }
 
-    /// A single section was collapsed or expanded.
+    /// A single foldable unit was collapsed or expanded.
     ///
-    /// Folding changes one contiguous run of top-level nodes and nothing else,
-    /// so the cached tree is spliced instead of rebuilt, which avoids a
-    /// full-document redraw. A full rebuild is still the fallback whenever the
-    /// splice is not provably equivalent.
-    pub(super) fn after_section_fold(&mut self, section: SectionId) {
-        if self.splice_section(section) {
+    /// Folding changes one contiguous run of rows and nothing else, so the
+    /// cached tree is spliced instead of rebuilt, which avoids a full-document
+    /// redraw. A full rebuild is still the fallback whenever the splice is not
+    /// provably equivalent.
+    pub(super) fn after_one_fold(&mut self, fold: FoldId) {
+        if self.splice_fold(fold) {
             // The tree now matches the new fold state, so the build key does
             // too; `ensure_layout` must not rebuild what was just spliced.
             self.built = Some(self.build_key());
@@ -62,130 +63,171 @@ impl App {
         }
     }
 
-    /// The outermost ancestor of `section` (itself when it has no parent).
-    fn outermost_section(&self, section: SectionId) -> SectionId {
-        let mut current = section;
-        while let Some(parent) = self.doc.sections.get(current).and_then(|s| s.parent) {
-            current = parent;
-        }
-        current
-    }
-
     pub(super) fn fold_current(&mut self, op: FoldOp) {
-        let Some(section) = self.current_section() else {
-            self.set_message("no section here");
+        if !self.doc.capabilities().folding {
+            self.set_message("this document has no foldable structure");
+            return;
+        }
+        let Some(fold) = self.current_fold() else {
+            self.set_message("no foldable node here");
             return;
         };
         match op {
             FoldOp::Toggle => {
-                self.folds.toggle(section);
+                self.folds.toggle(fold);
             }
-            FoldOp::Collapse => self.folds.collapse(section),
-            FoldOp::Expand => self.folds.expand(section),
+            FoldOp::Collapse => self.folds.collapse(fold),
+            FoldOp::Expand => self.folds.expand(fold),
         }
-        // Keep the section heading at the top so nested folds stay
-        // predictable.
-        if let Some(s) = self.doc.sections.get(section) {
-            self.anchor = (s.heading, 0);
-            self.cursor = s.heading;
+        // Keep the unit's own row at the top so nested folds stay predictable:
+        // the heading of a Markdown section, the key row of a container.
+        if let Some(node) = self.doc.fold_node(fold) {
+            self.anchor = (node, 0);
+            self.cursor = node;
         }
-        self.after_section_fold(section);
+        self.after_one_fold(fold);
     }
 
-    // -- heading navigation ------------------------------------------------
+    // -- structural navigation ---------------------------------------------
 
-    /// Index into [`RenderTree::heading_lines`] of the heading at or above the
-    /// cursor.
-    ///
-    /// Comparing *nodes* rather than line numbers keeps this correct even
-    /// though a node owns the blank spacing line in front of it.
-    fn heading_index(&self) -> Option<usize> {
-        let entries = self.tree.heading_lines();
-        if let Some(node) = self.cursor_node() {
-            if let Some(index) = entries.iter().position(|(_, n, _)| *n == node) {
-                return Some(index);
-            }
-        }
-        let line = self.cursor_line();
-        entries.iter().rposition(|(l, _, _)| *l <= line)
-    }
-
-    /// Whether the cursor sits on a heading (or on a collapsed marker).
-    pub(super) fn cursor_on_heading(&self) -> bool {
+    /// Whether the cursor sits on a primary structural node — a Markdown
+    /// heading, a JSON/YAML container — including a collapsed one.
+    pub(super) fn cursor_on_structural(&self) -> bool {
         self.cursor_node()
-            .and_then(|n| self.doc.node(n))
-            .map(|n| matches!(n.kind, NodeKind::Heading(_)))
-            .unwrap_or(false)
+            .is_some_and(|node| self.doc.is_structural(node))
     }
 
-    pub(super) fn jump_heading(&mut self, forward: bool) {
-        let entries: Vec<(usize, NodeId, u8)> = self.tree.heading_lines().to_vec();
-        if entries.is_empty() {
-            self.set_message("document has no headings");
+    /// `[` / `]`: the previous or next primary structural node.
+    ///
+    /// Markdown walks its headings; JSON and YAML walk their containers. Both
+    /// are "the thing that folds and that the outline nests", which is what
+    /// makes one key mean the analogous thing in every format. Nodes without a
+    /// row — hidden by a fold — are skipped, so the traversal is stable under
+    /// folding.
+    pub(super) fn jump_structural(&mut self, forward: bool) {
+        if !self.doc.capabilities().hierarchy_navigation {
+            self.set_message("this document has no structure to move through");
             return;
         }
-        let current = self.heading_index();
-        let target = if forward {
-            match current {
-                Some(i) => entries.get(i + 1).copied(),
-                None => entries.first().copied(),
+        if self.tree.heading_lines().is_empty() {
+            self.set_message(self.no_structure_message());
+            return;
+        }
+        let from = self.cursor_node().unwrap_or(0);
+        // Backwards from a body row means "the node I am inside", the way `[`
+        // has always gone to the heading you are under.
+        let start = if !forward && !self.cursor_on_structural() {
+            match self.doc.enclosing_structural(from) {
+                Some(node) if self.tree.first_line_of(node).is_some() => {
+                    self.goto_node(node);
+                    return;
+                }
+                _ => from,
             }
         } else {
-            match current {
-                Some(i) if self.cursor_on_heading() => {
-                    i.checked_sub(1).and_then(|p| entries.get(p).copied())
-                }
-                Some(i) => entries.get(i).copied(),
-                None => None,
-            }
+            from
         };
-        match target {
-            Some((line, _, _)) => self.scroll_with_context(line),
-            None => self.set_message(if forward {
-                "no further heading"
-            } else {
-                "no previous heading"
-            }),
-        }
-    }
-
-    pub(super) fn jump_heading_same_level(&mut self, forward: bool) {
-        let Some(section) = self.section_at_cursor_for_navigation() else {
-            self.jump_heading(forward);
-            return;
-        };
-        let level = self.doc.sections.get(section).map(|s| s.level).unwrap_or(1);
-        let mut current = section;
+        let mut cursor = start;
         loop {
             let next = if forward {
-                self.doc.next_section_at_or_above(current, level)
+                self.doc.next_structural(cursor)
             } else {
-                self.doc.previous_section_at_or_above(current, level)
+                self.doc.previous_structural(cursor)
             };
-            let Some(id) = next else {
+            let Some(node) = next else {
                 self.set_message(if forward {
-                    "no further heading at this level"
+                    "no further structural node"
                 } else {
-                    "no previous heading at this level"
+                    "no previous structural node"
                 });
                 return;
             };
-            let heading = self.doc.sections.get(id).map(|s| s.heading);
-            if let Some(node) = heading {
-                if let Some(line) = self.tree.first_line_of(node) {
-                    self.scroll_with_context(line);
-                    return;
-                }
+            if self.tree.first_line_of(node).is_some() {
+                self.goto_node(node);
+                return;
             }
-            current = id;
+            cursor = node;
         }
     }
 
-    /// The section used as the origin of a same-level jump: the section whose
-    /// heading is at or above the cursor.
-    fn section_at_cursor_for_navigation(&self) -> Option<SectionId> {
-        let node = self.cursor_node()?;
-        self.doc.section_of(node)
+    /// `{` / `}`: the previous or next sibling, climbing out of a finished
+    /// branch the way Markdown's "same or higher level" always has.
+    pub(super) fn jump_sibling(&mut self, forward: bool) {
+        if !self.doc.capabilities().sibling_navigation {
+            self.set_message("this document has no siblings to move between");
+            return;
+        }
+        let Some(from) = self.cursor_node() else {
+            self.set_message(self.no_structure_message());
+            return;
+        };
+        let mut cursor = from;
+        loop {
+            let next = if forward {
+                self.doc.next_sibling(cursor)
+            } else {
+                self.doc.previous_sibling(cursor)
+            };
+            let Some(node) = next else {
+                self.set_message(if forward {
+                    "no further sibling"
+                } else {
+                    "no previous sibling"
+                });
+                return;
+            };
+            if self.tree.first_line_of(node).is_some() {
+                self.goto_node(node);
+                return;
+            }
+            cursor = node;
+        }
+    }
+
+    /// Move to the enclosing node.
+    pub(super) fn jump_parent(&mut self) {
+        let Some(from) = self.cursor_node() else {
+            return;
+        };
+        match self
+            .doc
+            .parent(from)
+            .filter(|n| self.tree.first_line_of(*n).is_some())
+        {
+            Some(node) => self.goto_node(node),
+            None => self.set_message("already at the outermost level"),
+        }
+    }
+
+    /// Move to the first node inside this one.
+    pub(super) fn jump_first_child(&mut self) {
+        let Some(from) = self.cursor_node() else {
+            return;
+        };
+        match self
+            .doc
+            .first_child(from)
+            .filter(|n| self.tree.first_line_of(*n).is_some())
+        {
+            Some(node) => self.goto_node(node),
+            None => self.set_message("nothing inside this node"),
+        }
+    }
+
+    /// Scroll to a node's row and put the cursor on it.
+    pub(super) fn goto_node(&mut self, node: NodeId) {
+        if let Some(line) = self.tree.first_line_of(node) {
+            self.scroll_with_context(line);
+            self.place_cursor(node);
+        }
+    }
+
+    /// What to say when a document has no structure to move through.
+    fn no_structure_message(&self) -> &'static str {
+        match self.doc.kind() {
+            crate::document::DocumentKind::Markdown => "document has no headings",
+            _ => "document has no structure",
+        }
     }
 
     // -- search -----------------------------------------------------------
@@ -200,7 +242,7 @@ impl App {
     /// Incremental search: refresh matches and preview the first one at or
     /// after the current position.
     pub(super) fn refresh_search_preview(&mut self) {
-        self.search.refresh(&self.index);
+        self.search.refresh(self.doc.search_index());
         // No `invalidate()`: the query is not a layout input any more, so an
         // incremental search never rebuilds the document.
         self.prepare_frame();
@@ -248,16 +290,18 @@ impl App {
     }
 
     /// Expand every collapsed ancestor of `node` and re-layout.
+    ///
+    /// Only the ancestors: a search that reveals a match must not also open
+    /// the folds the reader deliberately closed elsewhere.
     pub(super) fn reveal_node(&mut self, node: NodeId) {
         if !self.doc.is_hidden(node, &self.folds) {
             return;
         }
-        if let Some(section) = self.doc.section_of(node) {
-            self.folds.reveal(section);
-            self.folds.expand(section);
-            // `reveal` expands every collapsed ancestor, so the outermost one
+        if let Some(fold) = self.doc.reveal(node, &mut self.folds) {
+            self.folds.expand(fold);
+            // `reveal` expanded every collapsed ancestor, so the outermost one
             // delimits the range that changed.
-            self.after_section_fold(self.outermost_section(section));
+            self.after_one_fold(self.doc.outermost_fold(fold));
         }
     }
 
@@ -319,9 +363,14 @@ impl App {
         if let Some(line) = self.link_line(id) {
             self.reveal_line(line);
         }
-        if let Some(link) = self.doc.links.get(id) {
+        if let Some(link) = self.link(id) {
             self.set_message(format!("link: {}", link.url));
         }
+    }
+
+    /// A link by id, for the formats that have links.
+    pub(crate) fn link(&self, id: LinkId) -> Option<&crate::document::markdown::Link> {
+        self.doc.as_markdown()?.links.get(id)
     }
 
     fn link_line(&self, id: LinkId) -> Option<usize> {
@@ -342,10 +391,15 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        if self.cursor_on_heading() {
+        // On a structural row `Enter` folds; anywhere else it follows a link,
+        // for the formats that have links. The two never compete for the key
+        // because a heading is not a link and a container is not either.
+        if self.cursor_on_structural() {
             self.fold_current(FoldOp::Toggle);
-        } else {
+        } else if self.doc.capabilities().links {
             self.open_selected_link();
+        } else {
+            self.fold_current(FoldOp::Toggle);
         }
     }
 
@@ -358,7 +412,7 @@ impl App {
             return;
         };
         self.selected_link = Some(id);
-        let Some(link) = self.doc.links.get(id).cloned() else {
+        let Some(link) = self.link(id).cloned() else {
             self.set_message("no link selected");
             return;
         };
@@ -371,7 +425,11 @@ impl App {
     /// Follow an internal `#anchor` link.
     pub(crate) fn jump_to_anchor(&mut self, target: &str) {
         let anchor = target.trim_start_matches('#');
-        let Some(node) = self.doc.anchors.resolve(anchor) else {
+        let Some(node) = self
+            .doc
+            .as_markdown()
+            .and_then(|doc| doc.anchors.resolve(anchor))
+        else {
             self.set_message(format!("unknown anchor: #{anchor}"));
             return;
         };
@@ -424,7 +482,7 @@ mod tests {
         for _ in 0..4 {
             a.apply(Action::NextHeading);
             if let Some(node) = a.tree().node_at(a.cursor_line()) {
-                if let Some(crate::document::Node {
+                if let Some(crate::document::markdown::Node {
                     kind: NodeKind::Heading(h),
                     ..
                 }) = a.doc.node(node)

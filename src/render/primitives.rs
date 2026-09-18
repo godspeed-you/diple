@@ -29,7 +29,6 @@ pub struct StyledSpan {
 }
 
 impl StyledSpan {
-    /// A plain run with a style.
     /// A span of text in a style.
     ///
     /// Every piece of document-controlled text reaches the terminal through
@@ -345,7 +344,7 @@ impl RenderTree {
             }
             line.node_offset = offset;
             first_line.entry(line.node).or_insert(idx);
-            if let LineKind::Heading(level) = line.kind {
+            if let LineKind::Heading(level) | LineKind::Structural(level) = line.kind {
                 if headings.last().map(|(_, n, _)| *n) != Some(line.node) {
                     headings.push((idx, line.node, level));
                 }
@@ -580,7 +579,7 @@ impl RenderTree {
                 break;
             };
             match line.kind {
-                LineKind::Heading(level) => {
+                LineKind::Heading(level) | LineKind::Structural(level) => {
                     if prev_heading != Some(line.node) {
                         fresh.push((idx, line.node, level));
                         prev_heading = Some(line.node);
@@ -590,6 +589,107 @@ impl RenderTree {
                     fresh.push((idx, line.node, 0));
                     prev_heading = Some(line.node);
                 }
+                _ => {}
+            }
+        }
+        self.headings.extend(fresh);
+        self.headings.sort_by_key(|(line, _, _)| *line);
+
+        self.tail = moved(self.tail).min(self.lines.len());
+        self.max_width = self.lines.iter().map(|l| l.width).max().unwrap_or(0);
+        true
+    }
+
+    /// Replace the lines `[start, start + old_len)` with a freshly laid-out
+    /// block, adjusting every index in the tree.
+    ///
+    /// This is the incremental path a *structured* fold takes: the rows of a
+    /// node's subtree are contiguous, so collapsing or expanding it rewrites
+    /// exactly that range. `splice_nodes` cannot be used because it works in
+    /// units of top-level nodes, and a structured document's top-level unit is
+    /// a whole source document.
+    ///
+    /// Returns `false` — changing nothing — when the range does not exist.
+    pub fn splice_lines(&mut self, start: usize, old_len: usize, lines: Vec<RenderLine>) -> bool {
+        let old_end = start.saturating_add(old_len);
+        if old_end > self.lines.len() {
+            return false;
+        }
+        let added = lines.len();
+        let delta = added as isize - old_len as isize;
+        let moved = |value: usize| -> usize { (value as isize + delta).max(0) as usize };
+
+        for line in &self.lines[start..old_end] {
+            self.first_line.remove(&line.node);
+        }
+        self.lines.splice(start..old_end, lines);
+
+        // Recompute `node_offset` across the new block. A splice always starts
+        // at a node boundary — the first row of the subtree being replaced —
+        // so the count restarts at 0 exactly as a full build would have it.
+        let mut prev: Option<NodeId> = None;
+        let mut offset = 0usize;
+        for idx in start..start + added {
+            let Some(line) = self.lines.get_mut(idx) else {
+                break;
+            };
+            if prev == Some(line.node) {
+                offset += 1;
+            } else {
+                offset = 0;
+                prev = Some(line.node);
+            }
+            line.node_offset = offset;
+        }
+
+        for entry in self.first_line.values_mut() {
+            if *entry >= old_end {
+                *entry = moved(*entry);
+            }
+        }
+        for idx in start..start + added {
+            if let Some(line) = self.lines.get(idx) {
+                self.first_line.entry(line.node).or_insert(idx);
+            }
+        }
+
+        // Node spans tile the tree in document order; the one containing the
+        // range changes length and every later one shifts.
+        for entry in &mut self.spans {
+            if entry.start >= old_end {
+                entry.start = moved(entry.start);
+            } else if entry.start <= start && entry.start + entry.len >= old_end {
+                entry.len = moved(entry.start + entry.len).saturating_sub(entry.start);
+            }
+        }
+
+        self.pending
+            .retain(|p| p.start < start || p.start >= old_end);
+        for entry in &mut self.pending {
+            if entry.start >= old_end {
+                entry.start = moved(entry.start);
+            }
+        }
+
+        self.headings
+            .retain(|(line, _, _)| *line < start || *line >= old_end);
+        for entry in &mut self.headings {
+            if entry.0 >= old_end {
+                entry.0 = moved(entry.0);
+            }
+        }
+        let mut fresh: Vec<(usize, NodeId, u8)> = Vec::new();
+        for idx in start..start + added {
+            let Some(line) = self.lines.get(idx) else {
+                break;
+            };
+            match line.kind {
+                LineKind::Heading(level) | LineKind::Structural(level) => {
+                    if fresh.last().map(|(_, n, _)| *n) != Some(line.node) {
+                        fresh.push((idx, line.node, level));
+                    }
+                }
+                LineKind::FoldedMarker => fresh.push((idx, line.node, 0)),
                 _ => {}
             }
         }

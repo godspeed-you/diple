@@ -1,8 +1,17 @@
 # diple 2.0 — implementation status and handover
 
-**Status:** work in progress. The document layer is written and self-consistent;
-the application layer has not been ported to it yet, so **the crate does not
-compile at this commit**. Everything needed to finish is below.
+**Status:** work in progress, paused at the user's request.
+
+**The library compiles** (`cargo +1.90.0 check --lib` is clean bar two
+dead-code warnings). The **test and bench targets do not**: roughly a hundred
+errors remain, almost all of them in `#[cfg(test)]` modules that still reach for
+the old Markdown-only API (`document::parse`, `TocState::new(&doc)`,
+`App::current_section`, `Document` fields on `DocumentModel`). They are
+mechanical; §3 Step A′ lists them.
+
+Nothing has been run yet. Expect real bugs on first execution, particularly in
+`layout/structured.rs` — its rendering tests are written but have never been
+executed, so the expected row strings in them are predictions, not observations.
 
 **Normative source of truth:** `docs/diple-v2-structured-documents-spec.md`.
 This file records *decisions and progress*, never requirements. Where the two
@@ -218,9 +227,70 @@ Nothing here crosses a thread.
 
 ## 3. What remains, in order
 
-### Step A — port the application layer (this is the blocker)
+### Step A — port the application layer — **done**
 
-Compile errors are currently confined to `src/app/`. The inventory:
+All of the table below has been applied and the library compiles:
+
+* `App::doc` is a `DocumentModel`; `App::folds` comes from `doc.fold_state()`;
+  the search index is borrowed from the document rather than owned.
+* `current_section()` → `current_fold() -> Option<FoldId>`; new
+  `capabilities()`, `format()` and `cursor_path()` accessors.
+* `jump_heading`/`jump_heading_same_level` → `jump_structural`/`jump_sibling`,
+  driven by `DocumentModel::next_structural`/`next_sibling`; new `jump_parent`
+  and `jump_first_child`.
+* `after_section_fold`/`splice_section` → `after_one_fold`/`splice_fold`,
+  dispatching through `Layout::relayout_fold`.
+* `TocState` is format-neutral, built lazily on first open, and maps back by
+  node rather than by section.
+* `HintContext` carries `DocumentCapabilities` and the format; groups and
+  wording follow them ("Headings" vs "Structure", "section" vs "container").
+* `Action::ParentNode` (`H`) and `Action::FirstChild` (`L`) exist, are bound,
+  dispatched, and described; the four heading actions kept their names — so
+  every `[keys]` file still works — and gained format-neutral descriptions.
+* `Workspace` carries a `FormatRequest` and loads through `document::load`, so
+  `:open` detects exactly like the command line.
+* `diagram_provider` takes a `DocumentModel` and skips everything for a
+  structured document.
+
+### Step A′ — make the test and bench targets compile (this is the blocker)
+
+`cargo +1.90.0 check --all-targets` still reports ~97 errors. They fall into a
+handful of mechanical groups:
+
+| Pattern | Replacement |
+| --- | --- |
+| `crate::document::parse` in a test | `crate::document::markdown::parse` |
+| `crate::document::{Document, NodeKind, …}` | `crate::document::markdown::{…}` |
+| `TocState::new(&doc)` | `TocState::new()` + `toc.ensure(&doc)` |
+| `toc.index_of(section)` / `selected_section()` | `index_covering(node)` / `selected_node()` |
+| `App::current_section()` | `App::current_fold()` |
+| `a.doc.sections` / `a.doc.node(..)` in app tests | `a.doc.as_markdown().unwrap().…` |
+| `Layout::build(&doc, …)` with a Markdown `Document` | `Layout::layout_markdown`, or wrap in `DocumentModel::markdown` |
+| `testing::doc()` / `AppBuilder` | build a `DocumentModel` (add a `json`/`yaml` helper while you are there) |
+| `HintContext { cursor_on_heading, .. }` in hint tests | `cursor_on_structural`, plus `capabilities` and `format` |
+| `Workspace::new(…)` | one more argument: `FormatRequest` |
+
+`benches/` and `tests/` need the same treatment; `tests/common/fixture_names()`
+filters `*.md` and needs a format-aware sibling.
+
+Then: run the suite, and expect `layout/structured.rs`'s own tests to disagree
+with the implementation somewhere — they were written before anything ran.
+
+### Step A″ — what the port still owes the specification
+
+* **The status line** does not yet show the format label or the path
+  breadcrumb. `App::format()` and `App::cursor_path()` exist for exactly this;
+  `DocumentPath::breadcrumb_within` does the left-truncation §24.3 asks for.
+  `StatusBar` needs two more fields.
+* **The cursor row is not highlighted** for structured documents.
+  `theme.structured.cursor_row` exists. Paint it at draw time in
+  `DocumentView::lines` from a `cursor_line: Option<usize>` — never as a layout
+  input, or every scroll would re-lay out the document.
+* **`LayoutOptions::structured_indent` / `show_indices`** are wired into the
+  layout engine and the fingerprint but nothing sets them from the config yet;
+  `apply_config` is where they belong.
+
+The original inventory, for reference:
 
 | File | What to change |
 | --- | --- |

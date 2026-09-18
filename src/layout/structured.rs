@@ -36,7 +36,7 @@
 use crate::document::structured::{
     ScalarKind, ScalarStyle, StructuredDocument, StructuredNodeKind,
 };
-use crate::document::{DocumentKind, FoldState, Match, MatchField, NodeId};
+use crate::document::{DocumentKind, Match, MatchField, NodeId};
 use crate::render::primitives::{LineKind, NodeSpan, RenderLine, RenderTree, StyledSpan};
 use crate::render::theme::{Style, Theme};
 

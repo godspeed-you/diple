@@ -235,7 +235,7 @@ fn ellipsis(unicode: bool) -> &'static str {
 ///
 /// `unicode` picks the box-drawing glyphs (`├ `, `└ `, `│ `) or their ASCII
 /// fallbacks (`+ `, `` ` ``, `| `).
-pub(crate) fn toc_connectors(entries: &[TocEntry], unicode: bool) -> Vec<String> {
+pub(crate) fn toc_connectors(entries: &[OutlineEntry], unicode: bool) -> Vec<String> {
     let (vertical, last, branch) = if unicode {
         ("│ ", "└ ", "├ ")
     } else {
@@ -279,7 +279,7 @@ pub(crate) fn toc_connectors(entries: &[TocEntry], unicode: bool) -> Vec<String>
 /// TOC sidebar widget with its own scroll offset.
 pub(crate) struct TocSidebar<'a> {
     /// Entries in document order.
-    pub(crate) entries: &'a [TocEntry],
+    pub(crate) entries: &'a [OutlineEntry],
     /// Index of the highlighted (selected) entry.
     pub(crate) selected: Option<usize>,
     /// Index of the entry containing the viewport (current section).
@@ -737,11 +737,11 @@ mod tests {
         }
     }
 
-    fn toc_entries(items: &[(usize, &str)]) -> Vec<TocEntry> {
+    fn toc_entries(items: &[(usize, &str)]) -> Vec<OutlineEntry> {
         items
             .iter()
             .enumerate()
-            .map(|(section, (depth, text))| TocEntry {
+            .map(|(section, (depth, text))| OutlineEntry {
                 section,
                 depth: *depth,
                 text: (*text).to_string(),
@@ -749,7 +749,7 @@ mod tests {
             .collect()
     }
 
-    fn toc_sidebar<'a>(entries: &'a [TocEntry], theme: &'a Theme) -> TocSidebar<'a> {
+    fn toc_sidebar<'a>(entries: &'a [OutlineEntry], theme: &'a Theme) -> TocSidebar<'a> {
         TocSidebar {
             entries,
             selected: None,

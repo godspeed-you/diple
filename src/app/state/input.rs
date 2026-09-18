@@ -104,7 +104,7 @@ impl App {
         match event.code {
             KeyCode::Esc => {
                 self.search.query = self.search.saved.clone();
-                self.search.refresh(&self.index);
+                self.search.refresh(self.doc.search_index());
                 self.mode = Mode::Normal;
                 self.prepare_frame();
             }
@@ -329,10 +329,10 @@ impl App {
             Action::Search => self.open_search(),
             Action::NextSearch => self.cycle_search(true),
             Action::PreviousSearch => self.cycle_search(false),
-            Action::NextHeading => self.jump_heading(true),
-            Action::PreviousHeading => self.jump_heading(false),
-            Action::NextHeadingSameLevel => self.jump_heading_same_level(true),
-            Action::PreviousHeadingSameLevel => self.jump_heading_same_level(false),
+            Action::NextHeading => self.jump_structural(true),
+            Action::PreviousHeading => self.jump_structural(false),
+            Action::NextHeadingSameLevel => self.jump_sibling(true),
+            Action::PreviousHeadingSameLevel => self.jump_sibling(false),
             Action::ToggleToc => self.toggle_toc(),
             Action::ToggleKeyHints => self.toggle_key_hints(),
             Action::ToggleMouse => self.toggle_mouse(),
@@ -371,6 +371,8 @@ impl App {
                 self.help_scroll = 0;
             }
             Action::ToggleMermaidSource => self.toggle_mermaid_source(),
+            Action::ParentNode => self.jump_parent(),
+            Action::FirstChild => self.jump_first_child(),
         }
         self.ensure_layout();
     }
@@ -474,19 +476,26 @@ impl App {
         }
         if let Some(id) = clicked_link {
             self.selected_link = Some(id);
-            if let Some(link) = self.doc.links.get(id) {
+            if let Some(link) = self.link(id) {
                 self.set_message(format!("link: {}", link.url));
             }
             return;
         }
-        if matches!(kind, LineKind::Heading(_) | LineKind::FoldedMarker) {
-            if let Some(section) = self.doc.section_of(node) {
-                self.folds.toggle(section);
-                if let Some(s) = self.doc.sections.get(section) {
-                    self.anchor = (s.heading, 0);
-                    self.cursor = s.heading;
+        // Clicking a row that stands for a foldable unit toggles it: a
+        // Markdown heading, a JSON or YAML container, or the single row a
+        // collapsed one leaves behind.
+        let foldable_row = matches!(
+            kind,
+            LineKind::Heading(_) | LineKind::Structural(_) | LineKind::FoldedMarker
+        );
+        if foldable_row {
+            if let Some(fold) = self.doc.fold_at(node) {
+                self.folds.toggle(fold);
+                if let Some(own) = self.doc.fold_node(fold) {
+                    self.anchor = (own, 0);
+                    self.cursor = own;
                 }
-                self.after_section_fold(section);
+                self.after_one_fold(fold);
             }
         }
     }

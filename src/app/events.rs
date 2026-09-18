@@ -153,7 +153,7 @@ pub(crate) fn draw_in(app: &App, frame: &mut ratatui::Frame<'_>, area: Rect, foc
     }
 
     if all.sidebar.width > 0 {
-        let current = app.current_section().and_then(|s| app.toc.index_of(s));
+        let current = app.cursor_node().and_then(|n| app.toc.index_covering(n));
         frame.render_widget(
             TocSidebar {
                 entries: &app.toc.entries,
@@ -425,7 +425,7 @@ fn draw_hyperlinks(app: &App, content: Rect, out: &mut impl Write) -> io::Result
         for span in slice_line(line, app.h_offset(), width) {
             let span_width = span.width();
             if let Some(id) = span.link {
-                if let Some(link) = app.doc.links.get(id) {
+                if let Some(link) = app.link(id) {
                     if !wrote {
                         queue!(out, SavePosition)?;
                         wrote = true;
@@ -757,7 +757,7 @@ mod tests {
     impl crate::mermaid::MermaidRenderer for Imaging {
         fn render(
             &self,
-            _block: &crate::document::MermaidBlock,
+            _block: &crate::document::markdown::MermaidBlock,
             _width: usize,
         ) -> crate::mermaid::MermaidRender {
             crate::mermaid::MermaidRender::ok(crate::mermaid::MermaidOutput::Image(

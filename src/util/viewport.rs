@@ -81,7 +81,8 @@ pub fn slice_line_text(line: &RenderLine, h_offset: usize, width: usize) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{parse, SearchIndex};
+    use crate::document::markdown::parse;
+    use crate::document::SearchIndex;
     use crate::layout::{Layout, LayoutOptions};
     use crate::render::theme::Theme;
 

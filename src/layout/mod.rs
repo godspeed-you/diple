@@ -24,6 +24,7 @@ pub mod code;
 pub mod inline;
 pub mod list;
 pub(crate) mod paragraph;
+pub mod structured;
 pub mod table;
 
 /// Grapheme- and width-correct string helpers.
@@ -39,7 +40,7 @@ use crate::config::schema::{Config, TableMode};
 use crate::document::markdown::{
     Document, Footnote, Heading, Image, Inlines, List, ListItem, MermaidBlock, Node, NodeKind,
 };
-use crate::document::{FoldState, Match, NodeId};
+use crate::document::{DocumentModel, FoldState, Match, NodeId};
 use crate::layout::code::{CodeCache, CodeOptions};
 use crate::layout::inline::{layout_inlines, line_width, push_span};
 use crate::layout::list::{marker, marker_width, task_box, INDENT_PER_LEVEL};
@@ -123,6 +124,8 @@ pub struct LayoutFingerprint {
     unicode: bool,
     footnotes: bool,
     lazy_code: bool,
+    structured_indent: usize,
+    show_indices: bool,
 }
 
 /// Everything the layout engine needs besides the document.
@@ -158,6 +161,13 @@ pub struct LayoutOptions<'a> {
     pub unicode: bool,
     /// Render the footnote definitions section at the end of the document.
     pub footnotes: bool,
+    /// Columns one nesting level of a structured document is indented by.
+    pub structured_indent: usize,
+    /// Show `[0]`-style indices on sequence items.
+    ///
+    /// With this off, YAML falls back to its own `-` marker and JSON to bare
+    /// items; the index stays discoverable through the path either way.
+    pub show_indices: bool,
     /// Defer syntax highlighting to [`Layout::realize`].
     ///
     /// `false` — the default — highlights every code block while laying out,
@@ -187,6 +197,8 @@ impl<'a> LayoutOptions<'a> {
             unicode: true,
             footnotes: true,
             lazy_code: false,
+            structured_indent: 2,
+            show_indices: true,
         }
     }
 
@@ -262,6 +274,8 @@ impl<'a> LayoutOptions<'a> {
             unicode: self.unicode,
             footnotes: self.footnotes,
             lazy_code: self.lazy_code,
+            structured_indent: self.structured_indent,
+            show_indices: self.show_indices,
         }
     }
 
@@ -310,7 +324,20 @@ impl Layout {
     }
 
     /// Lay out a document, reusing the cached syntax highlighting.
-    pub fn layout(&self, doc: &Document, opts: &LayoutOptions<'_>) -> RenderTree {
+    ///
+    /// This is the one place the format boundary turns into rows. Both
+    /// branches produce the same [`RenderTree`] contract — every line carries
+    /// the [`NodeId`] it came from — so nothing downstream of here knows or
+    /// needs to know which backend was on the other side.
+    pub fn layout(&self, doc: &DocumentModel, opts: &LayoutOptions<'_>) -> RenderTree {
+        match doc {
+            DocumentModel::Markdown(markdown) => self.layout_markdown(markdown, opts),
+            DocumentModel::Structured(structured) => structured::layout(structured, opts),
+        }
+    }
+
+    /// Lay out a Markdown document specifically.
+    pub fn layout_markdown(&self, doc: &Document, opts: &LayoutOptions<'_>) -> RenderTree {
         let mut builder = Builder::new(doc, opts, &self.code_cache);
         builder.run();
         let Builder {
@@ -324,8 +351,52 @@ impl Layout {
     }
 
     /// Lay out a document without a persistent cache.
-    pub fn build(doc: &Document, opts: &LayoutOptions<'_>) -> RenderTree {
+    pub fn build(doc: &DocumentModel, opts: &LayoutOptions<'_>) -> RenderTree {
         Layout::new().layout(doc, opts)
+    }
+
+    /// Re-lay out the content a fold change rewrites and splice it in.
+    ///
+    /// Returns `false` when the tree cannot be spliced, in which case the
+    /// caller falls back to a full re-layout. Both formats rewrite exactly the
+    /// run of rows the fold governs and leave every other row — including its
+    /// cached syntax highlighting — alone.
+    pub fn relayout_fold(
+        &self,
+        doc: &DocumentModel,
+        opts: &LayoutOptions<'_>,
+        tree: &mut RenderTree,
+        fold: crate::document::FoldId,
+    ) -> bool {
+        match doc {
+            DocumentModel::Markdown(markdown) => {
+                let Some(section) = markdown.sections.get(fold) else {
+                    return false;
+                };
+                let (heading, end) = (section.heading, section.end);
+                let first = markdown.nodes.partition_point(|n| n.id < heading);
+                let last = markdown.nodes.partition_point(|n| n.id < end);
+                if last <= first {
+                    return false;
+                }
+                // The trailing footnote section is laid out after the body, so
+                // a range that contains a definition cannot be spliced in
+                // place.
+                if markdown.nodes[first..last]
+                    .iter()
+                    .any(|n| matches!(n.kind, NodeKind::FootnoteDefinition(_)))
+                {
+                    return false;
+                }
+                self.relayout_nodes(markdown, opts, tree, first, last - first)
+            }
+            DocumentModel::Structured(structured) => {
+                let Some(node) = structured.fold_node(fold) else {
+                    return false;
+                };
+                structured::relayout_subtree(structured, opts, tree, node)
+            }
+        }
     }
 
     /// Highlight the deferred code blocks overlapping the lines
@@ -336,12 +407,17 @@ impl Layout {
     /// the same widths, so no index and no anchor can move.
     pub fn realize(
         &self,
-        doc: &Document,
+        doc: &DocumentModel,
         opts: &LayoutOptions<'_>,
         tree: &mut RenderTree,
         first: usize,
         last: usize,
     ) -> bool {
+        // Only Markdown defers anything: a structured document has no syntax
+        // highlighting to catch up on.
+        let DocumentModel::Markdown(doc) = doc else {
+            return false;
+        };
         let blocks = tree.take_pending_in(first, last);
         if blocks.is_empty() {
             return false;

@@ -896,7 +896,7 @@ fn alignment(a: PdAlignment) -> Alignment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::links::LinkKind;
+    use crate::document::markdown::links::LinkKind;
 
     fn kinds(doc: &Document) -> Vec<&NodeKind> {
         doc.nodes.iter().map(|n| &n.kind).collect()

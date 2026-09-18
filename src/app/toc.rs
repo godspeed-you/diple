@@ -1,18 +1,29 @@
-//! Table of contents state.
+//! Outline sidebar state.
 //!
-//! The entry list mirrors the document's section hierarchy exactly — it is
-//! derived from [`crate::document::Section`], never from rendered lines — and
-//! carries its own selection and scroll offset so that long documents stay
-//! navigable.
+//! The entry list mirrors the document's hierarchy exactly — it is derived
+//! from the [`DocumentModel`], never from rendered lines — and carries its own
+//! selection and scroll offset so that long documents stay navigable. For
+//! Markdown that hierarchy is the heading tree, which is why the sidebar is
+//! still called the table of contents there; for JSON and YAML it is the
+//! structure of the document itself.
+//!
+//! # Why the entries are built lazily
+//!
+//! A structured outline has one entry per node, and a large export has a great
+//! many nodes. Building the list when the reader first opens the sidebar keeps
+//! that cost off the path to the first frame, and a document whose outline is
+//! never opened never pays it at all. Re-deriving it is never a reparse (see
+//! [`DocumentModel::outline`]), so a document that changes shape — a fold, a
+//! reload — simply invalidates the cache.
 
-use crate::document::{Document, SectionId, TocEntry};
+use crate::document::{DocumentModel, NodeId, OutlineEntry};
 
-/// Widest the sidebar may grow, however long the headings are.
+/// Widest the sidebar may grow, however long the entries are.
 ///
 /// The same number as [`crate::app::hints::MIN_DOCUMENT_WIDTH`], and for the
 /// same reason: 40 columns is the narrowest thing this program still calls
 /// readable, so it is also the most a navigation aid may take from the text.
-/// A heading that does not fit is scrolled to, not accommodated.
+/// An entry that does not fit is scrolled to, not accommodated.
 pub(crate) const MAX_WIDTH: u16 = 40;
 
 /// Narrowest the sidebar may shrink on a screen with room for it.
@@ -27,51 +38,35 @@ pub(crate) struct TocState {
     pub(crate) selected: usize,
     /// Index of the first drawn entry.
     pub(crate) scroll: usize,
-    /// First visible column, for headings wider than [`MAX_WIDTH`].
+    /// First visible column, for entries wider than [`MAX_WIDTH`].
     pub(crate) h_scroll: usize,
-    /// Entries in document order.
-    pub(crate) entries: Vec<TocEntry>,
-}
-
-/// Build the entry list from the document's sections.
-pub(crate) fn entries(doc: &Document) -> Vec<TocEntry> {
-    let mut out = Vec::with_capacity(doc.sections.len());
-    for section in &doc.sections {
-        let Some(heading) = doc.heading_of(section.id) else {
-            continue;
-        };
-        out.push(TocEntry {
-            section: section.id,
-            depth: depth_of(doc, section.id),
-            text: heading.text.clone(),
-        });
-    }
-    out
-}
-
-fn depth_of(doc: &Document, section: SectionId) -> usize {
-    let mut depth = 0;
-    let mut current = doc.sections.get(section).and_then(|s| s.parent);
-    while let Some(parent) = current {
-        depth += 1;
-        current = doc.sections.get(parent).and_then(|s| s.parent);
-        if depth > doc.sections.len() {
-            break; // defensive: never loop on a malformed hierarchy
-        }
-    }
-    depth
+    /// Entries in document order, derived on first use.
+    pub(crate) entries: Vec<OutlineEntry>,
+    /// Whether [`TocState::entries`] has been derived yet.
+    built: bool,
 }
 
 impl TocState {
-    /// Build the state for a document (closed).
-    pub(crate) fn new(doc: &Document) -> Self {
-        Self {
-            open: false,
-            selected: 0,
-            scroll: 0,
-            h_scroll: 0,
-            entries: entries(doc),
+    /// State for a document, closed and not yet derived.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Derive the entries if they are not there yet.
+    pub(crate) fn ensure(&mut self, doc: &DocumentModel) {
+        if !self.built {
+            self.entries = doc.outline();
+            self.built = true;
         }
+    }
+
+    /// Forget the derived entries; the next [`TocState::ensure`] rebuilds them.
+    pub(crate) fn invalidate(&mut self) {
+        self.entries.clear();
+        self.built = false;
+        self.selected = 0;
+        self.scroll = 0;
+        self.h_scroll = 0;
     }
 
     /// Number of entries.
@@ -79,15 +74,15 @@ impl TocState {
         self.entries.len()
     }
 
-    /// Whether the document has no headings.
+    /// Whether the derived list is empty.
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Widest entry row in columns, borders excluded.
     ///
-    /// One column for the current-section marker, two per nesting level for
-    /// the tree connectors, and the heading itself. Both the marker and the
+    /// One column for the current-entry marker, two per nesting level for the
+    /// tree connectors, and the entry itself. Both the marker and the
     /// connectors are one cell wide in either glyph set, so this does not
     /// depend on whether the terminal draws them in Unicode or ASCII.
     pub(crate) fn content_width(&self) -> usize {
@@ -101,7 +96,7 @@ impl TocState {
     /// Sidebar width for a screen of `total` columns, including the border.
     ///
     /// The sidebar is as wide as its widest entry and no wider, so a document
-    /// of short headings gives the columns it does not need back to the text.
+    /// of short entries gives the columns it does not need back to the text.
     /// Two ceilings bound it: [`MAX_WIDTH`], and a third of the screen so it
     /// can never dominate a narrow terminal. Whatever the ceilings cut off is
     /// reachable by scrolling the sidebar sideways.
@@ -125,14 +120,29 @@ impl TocState {
         self.h_scroll = (self.h_scroll as isize + delta).clamp(0, max.max(0)) as usize;
     }
 
-    /// The section the selected entry refers to.
-    pub(crate) fn selected_section(&self) -> Option<SectionId> {
-        self.entries.get(self.selected).map(|e| e.section)
+    /// The node the selected entry refers to.
+    pub(crate) fn selected_node(&self) -> Option<NodeId> {
+        self.entries.get(self.selected).map(|e| e.node)
     }
 
-    /// The entry index for a section id.
-    pub(crate) fn index_of(&self, section: SectionId) -> Option<usize> {
-        self.entries.iter().position(|e| e.section == section)
+    /// The entry index for a node id.
+    pub(crate) fn index_of_node(&self, node: NodeId) -> Option<usize> {
+        self.entries.iter().position(|e| e.node == node)
+    }
+
+    /// The entry index that best describes where `node` is: its own entry, or
+    /// the last entry at or before it in document order.
+    ///
+    /// The current-entry marker uses this, so a reader scrolling through a
+    /// body paragraph or a scalar still sees which part of the outline they
+    /// are in.
+    pub(crate) fn index_covering(&self, node: NodeId) -> Option<usize> {
+        if let Some(exact) = self.index_of_node(node) {
+            return Some(exact);
+        }
+        self.entries
+            .iter()
+            .rposition(|e| e.node <= node)
     }
 
     /// Move the selection by `delta` entries, clamped.
@@ -171,14 +181,42 @@ impl TocState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::parse;
+    use crate::document::{load, FormatRequest, SourceDocument};
 
     const DOC: &str = "# One\n\ntext\n\n## Two\n\ntext\n\n### Three\n\ntext\n\n# Four\n\ntext\n";
 
+    fn model(name: &str, src: &str) -> DocumentModel {
+        load(FormatRequest::Auto, SourceDocument::new(name, src))
+            .expect(src)
+            .model
+    }
+
+    fn built(name: &str, src: &str) -> (DocumentModel, TocState) {
+        let doc = model(name, src);
+        let mut toc = TocState::new();
+        toc.ensure(&doc);
+        (doc, toc)
+    }
+
     #[test]
-    fn entries_mirror_the_hierarchy() {
-        let doc = parse(DOC);
-        let toc = TocState::new(&doc);
+    fn entries_are_not_derived_until_they_are_needed() {
+        let doc = model("t.md", DOC);
+        let mut toc = TocState::new();
+        assert!(toc.is_empty(), "nothing is built at construction");
+        toc.ensure(&doc);
+        assert_eq!(toc.len(), 4);
+        // Deriving twice costs nothing and changes nothing.
+        toc.ensure(&doc);
+        assert_eq!(toc.len(), 4);
+        toc.invalidate();
+        assert!(toc.is_empty());
+        toc.ensure(&doc);
+        assert_eq!(toc.len(), 4);
+    }
+
+    #[test]
+    fn markdown_entries_mirror_the_heading_hierarchy() {
+        let (_, toc) = built("t.md", DOC);
         let shape: Vec<(usize, &str)> = toc
             .entries
             .iter()
@@ -191,9 +229,28 @@ mod tests {
     }
 
     #[test]
+    fn structured_entries_mirror_the_document_structure() {
+        let (_, toc) = built("t.yaml", "meta:\n  name: nginx\nports:\n  - 80\n");
+        let shape: Vec<(usize, &str)> = toc
+            .entries
+            .iter()
+            .map(|e| (e.depth, e.text.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (0, "root"),
+                (1, "meta"),
+                (2, "name: nginx"),
+                (1, "ports"),
+                (2, "[0]: 80"),
+            ]
+        );
+    }
+
+    #[test]
     fn selection_clamps_and_scrolls() {
-        let doc = parse(DOC);
-        let mut toc = TocState::new(&doc);
+        let (_, mut toc) = built("t.md", DOC);
         toc.move_selection(-5, 2);
         assert_eq!(toc.selected, 0);
         toc.move_selection(99, 2);
@@ -205,30 +262,40 @@ mod tests {
     }
 
     #[test]
-    fn selected_section_maps_back() {
-        let doc = parse(DOC);
-        let mut toc = TocState::new(&doc);
+    fn the_selected_entry_maps_back_to_a_node() {
+        let (doc, mut toc) = built("t.md", DOC);
         toc.select(2, 10);
-        let section = toc.selected_section().expect("section");
+        let node = toc.selected_node().expect("a node");
+        assert!(doc.is_structural(node), "an outline entry is a heading");
+        assert_eq!(toc.index_of_node(node), Some(2));
+    }
+
+    #[test]
+    fn the_current_entry_is_the_one_the_cursor_is_under() {
+        let (doc, toc) = built("t.md", DOC);
+        let second = toc.entries[1].node;
+        // A body node just after the "Two" heading belongs to that entry.
+        assert_eq!(toc.index_covering(second + 1), Some(1));
+        assert_eq!(toc.index_covering(second), Some(1));
+        assert_eq!(toc.index_covering(0), Some(0));
         assert_eq!(
-            doc.heading_of(section).map(|h| h.text.as_str()),
-            Some("Three")
+            toc.index_covering(doc.node_count() + 10),
+            Some(toc.len() - 1),
+            "past the end is the last entry"
         );
-        assert_eq!(toc.index_of(section), Some(2));
     }
 
     #[test]
     fn width_follows_the_widest_entry_within_its_ceilings() {
-        let doc = parse(DOC);
-        let toc = TocState::new(&doc);
+        let (_, toc) = built("t.md", DOC);
         // "  └ Three" — marker, two levels of connector, five letters.
         assert_eq!(toc.content_width(), 10);
-        // Short headings do not claim the full ceiling: content plus border,
+        // Short entries do not claim the full ceiling: content plus border,
         // lifted to the floor a usable sidebar needs.
         assert_eq!(toc.width(120), MIN_WIDTH);
 
-        let long = parse(&format!("# {}\n\ntext\n", "a".repeat(80)));
-        let wide = TocState::new(&long);
+        let long = format!("# {}\n\ntext\n", "a".repeat(80));
+        let (_, wide) = built("t.md", &long);
         assert_eq!(wide.width(200), MAX_WIDTH, "capped by MAX_WIDTH");
         assert_eq!(wide.width(60), 20, "capped by a third of the screen");
         assert_eq!(wide.width(30), MIN_WIDTH, "the floor beats a small third");
@@ -237,8 +304,8 @@ mod tests {
 
     #[test]
     fn horizontal_scrolling_is_clamped_to_the_overflow() {
-        let long = parse(&format!("# {}\n\ntext\n", "a".repeat(80)));
-        let mut toc = TocState::new(&long);
+        let long = format!("# {}\n\ntext\n", "a".repeat(80));
+        let (_, mut toc) = built("t.md", &long);
         // 1 marker + 80 letters, shown through the 39 inner columns of a
         // sidebar at MAX_WIDTH.
         assert_eq!(toc.content_width(), 81);
@@ -252,10 +319,20 @@ mod tests {
         assert_eq!(toc.h_scroll, 0, "and never before the first");
 
         // Nothing to scroll when everything already fits.
-        let doc = parse(DOC);
-        let mut fits = TocState::new(&doc);
+        let (_, mut fits) = built("t.md", DOC);
         assert_eq!(fits.max_h_scroll(39), 0);
         fits.scroll_h(8, 39);
         assert_eq!(fits.h_scroll, 0);
+    }
+
+    #[test]
+    fn a_long_scalar_cannot_decide_the_sidebar_width() {
+        let long = "x".repeat(500);
+        let (_, toc) = built("t.yaml", &format!("a: 1\nk: \"{long}\"\n"));
+        assert!(
+            toc.content_width() < 60,
+            "previews are trimmed: {}",
+            toc.content_width()
+        );
     }
 }

@@ -288,6 +288,11 @@ const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::Help, &["?", "f1"]),
     (Action::CommandPrompt, &[":"]),
     (Action::ToggleMermaidSource, &["s"]),
+    // `h` and `l` scroll sideways; their shifted forms move through the
+    // hierarchy, which is the same axis one level up. Neither key was bound,
+    // so no existing binding changes meaning.
+    (Action::ParentNode, &["H"]),
+    (Action::FirstChild, &["L"]),
 ];
 
 impl KeyMap {

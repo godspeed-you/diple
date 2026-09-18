@@ -50,7 +50,7 @@
 use std::time::Instant;
 
 use super::App;
-use crate::document::{NodeId, NodeKind, SectionId};
+use crate::document::{FoldId, NodeId};
 use crate::layout::{LayoutFingerprint, LayoutOptions};
 use crate::render::theme::ColorLevel;
 use crate::util::viewport::max_top_line;
@@ -286,16 +286,24 @@ impl App {
         }
     }
 
-    /// When the anchored node is hidden (its section was collapsed), fall back
-    /// to the nearest visible ancestor heading.
+    /// When the anchored node is hidden — its section or its container was
+    /// collapsed — fall back to the nearest visible ancestor's row.
     fn visible_ancestor_line(&self, node: NodeId) -> Option<usize> {
-        let mut section = self.doc.section_of(node);
-        while let Some(id) = section {
-            let s = self.doc.sections.get(id)?;
-            if let Some(line) = self.tree.first_line_of(s.heading) {
+        let mut fold = self.doc.fold_at(node);
+        let mut guard = 0usize;
+        while let Some(id) = fold {
+            if let Some(line) = self
+                .doc
+                .fold_node(id)
+                .and_then(|n| self.tree.first_line_of(n))
+            {
                 return Some(line);
             }
-            section = s.parent;
+            fold = self.folds.parent(id);
+            guard += 1;
+            if guard > self.folds.len() {
+                break;
+            }
         }
         None
     }
@@ -353,33 +361,16 @@ impl App {
         self.relayouts
     }
 
-    /// Re-lay out the top-level nodes of `section` in place.
+    /// Re-lay out the rows one foldable unit governs, in place.
     ///
     /// Returns `false` when the incremental path does not apply, in which case
-    /// the caller must rebuild.
-    pub(super) fn splice_section(&mut self, section: SectionId) -> bool {
+    /// the caller must rebuild. The decision of *what* a fold's rows are
+    /// belongs to the layout engine, which knows both formats; this method
+    /// only owns the cache bookkeeping around it.
+    pub(super) fn splice_fold(&mut self, fold: FoldId) -> bool {
         if self.built.is_none() {
             // Some other input already invalidated the tree; splicing into a
             // stale one would keep the staleness.
-            return false;
-        }
-        let Some(s) = self.doc.sections.get(section) else {
-            return false;
-        };
-        let (heading, end) = (s.heading, s.end);
-        let first = self.doc.nodes.partition_point(|n| n.id < heading);
-        let last = self.doc.nodes.partition_point(|n| n.id < end);
-        if first >= last || self.doc.nodes.get(first).map(|n| n.id) != Some(heading) {
-            return false;
-        }
-        // The footnote section at the end of the document lays out the blocks
-        // of every definition and honours the fold state while doing so, so a
-        // fold over a definition can change lines outside the spliced range.
-        // Rare enough to simply rebuild.
-        let touches_footnotes = self.doc.nodes[first..last]
-            .iter()
-            .any(|n| matches!(n.kind, NodeKind::FootnoteDefinition(_)));
-        if touches_footnotes {
             return false;
         }
         self.clear_painted();
@@ -387,14 +378,12 @@ impl App {
         let mut tree = std::mem::take(&mut self.tree);
         let spliced = {
             let opts = self.layout_options();
-            self.layout
-                .relayout_nodes(&self.doc, &opts, &mut tree, first, last - first)
+            self.layout.relayout_fold(&self.doc, &opts, &mut tree, fold)
         };
         self.tree = tree;
         if spliced && self.debug {
             eprintln!(
-                "diple: spliced nodes {first}..{last} of {}, {} lines total, in {:?}",
-                self.doc.nodes.len(),
+                "diple: spliced fold {fold}, {} lines total, in {:?}",
                 self.tree.len(),
                 started.elapsed()
             );

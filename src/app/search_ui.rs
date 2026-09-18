@@ -127,7 +127,7 @@ impl SearchState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::parse;
+    use crate::document::markdown::parse;
 
     fn state(doc_src: &str, query: &str) -> SearchState {
         let doc = parse(doc_src);

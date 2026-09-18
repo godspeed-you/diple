@@ -14,7 +14,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::state::{App, Mode};
 use crate::config::Action;
-use crate::document::NodeKind;
+use crate::document::markdown::NodeKind;
 use crate::render::primitives::LineKind;
 use crate::testing::{app_sized, key, key_mod};
 

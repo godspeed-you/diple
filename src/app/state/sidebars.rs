@@ -17,31 +17,39 @@
 
 use super::{App, Mode};
 use crate::app::hints::HintContext;
-use crate::document::{NodeId, NodeKind};
+use crate::document::{DocumentKind, NodeId};
 use crate::render::terminal::HintGroup;
 
 impl App {
     // -- TOC --------------------------------------------------------------
 
     pub(super) fn toggle_toc(&mut self) {
-        if self.toc.is_empty() {
-            self.set_message("document has no headings");
+        if !self.doc.capabilities().outline || !self.doc.has_outline() {
+            self.set_message(match self.doc.kind() {
+                DocumentKind::Markdown => "document has no headings",
+                _ => "document has no structure to outline",
+            });
             return;
         }
         if self.toc.open && self.mode == Mode::Toc {
             self.toc.open = false;
             self.mode = Mode::Normal;
         } else {
+            // The entries are derived here rather than at load time: a large
+            // structured document has one per node, and a reader who never
+            // opens the sidebar should never pay for them.
+            self.toc.ensure(&self.doc);
             self.toc.open = true;
             self.mode = Mode::Toc;
             // Opening it shows the left edge of the outline, whatever the
             // reader had scrolled to before closing it.
             self.toc.h_scroll = 0;
-            if let Some(current) = self.current_section() {
-                if let Some(index) = self.toc.index_of(current) {
-                    let height = self.content_height();
-                    self.toc.select(index, height);
-                }
+            if let Some(index) = self
+                .cursor_node()
+                .and_then(|node| self.toc.index_covering(node))
+            {
+                let height = self.content_height();
+                self.toc.select(index, height);
             }
         }
         self.invalidate();
@@ -96,7 +104,9 @@ impl App {
                 self.tree.max_width() > self.content_width()
             },
             link_in_view: self.link_in_view(),
-            cursor_on_heading: self.cursor_on_heading(),
+            capabilities: self.doc.capabilities(),
+            format: self.doc.kind(),
+            cursor_on_structural: self.cursor_on_structural(),
             near_diagram: self.near_diagram(),
             search_active: self.search.has_matches(),
             mouse_available: self.caps.mouse,
@@ -143,16 +153,14 @@ impl App {
     /// [`Mode::Toc`] and `j`/`k` keep walking the headings; `Esc` (or `t`)
     /// leaves the sidebar, and that is the only way out of it.
     pub(crate) fn toc_jump(&mut self) {
-        let Some(section) = self.toc.selected_section() else {
+        let Some(node) = self.toc.selected_node() else {
             return;
         };
-        let Some(heading) = self.doc.sections.get(section).map(|s| s.heading) else {
-            return;
-        };
-        self.reveal_node(heading);
+        self.reveal_node(node);
         self.ensure_layout();
-        if let Some(line) = self.tree.first_line_of(heading) {
+        if let Some(line) = self.tree.first_line_of(node) {
             self.scroll_with_context(line);
+            self.place_cursor(node);
         }
     }
 
@@ -179,15 +187,18 @@ impl App {
     }
 
     /// The Mermaid node closest to the cursor line.
+    ///
+    /// Mermaid is a Markdown concept, so this asks the Markdown model
+    /// directly; a structured document simply has no diagrams and `s` says so.
     fn nearest_diagram(&self) -> Option<NodeId> {
+        use crate::document::markdown::NodeKind;
+        let markdown = self.doc.as_markdown()?;
         let cursor = self.cursor_line();
         let mut best: Option<(usize, NodeId)> = None;
         for (idx, line) in self.tree.lines.iter().enumerate() {
-            let is_mermaid = self
-                .doc
+            let is_mermaid = markdown
                 .node(line.node)
-                .map(|n| matches!(n.kind, NodeKind::Mermaid(_)))
-                .unwrap_or(false);
+                .is_some_and(|n| matches!(n.kind, NodeKind::Mermaid(_)));
             if !is_mermaid {
                 continue;
             }

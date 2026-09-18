@@ -82,6 +82,14 @@ pub enum Action {
     CommandPrompt,
     /// Toggle Mermaid source view on a diagram (`s`).
     ToggleMermaidSource,
+    /// Move to the enclosing node (`H`).
+    ///
+    /// The structured-document counterpart of "go up a level": from a
+    /// mapping entry to the mapping, from a Markdown body node to its
+    /// heading, from a heading to its parent's.
+    ParentNode,
+    /// Move to the first node inside this one (`L`).
+    FirstChild,
 }
 
 impl Action {
@@ -124,6 +132,8 @@ impl Action {
         Action::Help,
         Action::CommandPrompt,
         Action::ToggleMermaidSource,
+        Action::ParentNode,
+        Action::FirstChild,
     ];
 
     /// snake_case name used in configuration.
@@ -166,6 +176,8 @@ impl Action {
             Action::Help => "help",
             Action::CommandPrompt => "command_prompt",
             Action::ToggleMermaidSource => "toggle_mermaid_source",
+            Action::ParentNode => "parent_node",
+            Action::FirstChild => "first_child",
         }
     }
 
@@ -192,28 +204,30 @@ impl Action {
             Action::Search => "search",
             Action::NextSearch => "next search result",
             Action::PreviousSearch => "previous search result",
-            Action::NextHeading => "next heading",
-            Action::PreviousHeading => "previous heading",
-            Action::NextHeadingSameLevel => "next heading (same or higher level)",
-            Action::PreviousHeadingSameLevel => "previous heading (same or higher level)",
-            Action::ToggleToc => "toggle table of contents",
+            Action::NextHeading => "next heading / structural node",
+            Action::PreviousHeading => "previous heading / structural node",
+            Action::NextHeadingSameLevel => "next sibling (same or higher level)",
+            Action::PreviousHeadingSameLevel => "previous sibling (same or higher level)",
+            Action::ToggleToc => "toggle the outline (table of contents)",
             Action::ToggleKeyHints => "toggle key hints sidebar",
             Action::ToggleMouse => "toggle mouse (off: select text)",
             Action::FocusOtherPane => "focus the other pane",
             Action::NextTab => "next tab",
             Action::PreviousTab => "previous tab",
-            Action::Activate => "activate heading/link",
+            Action::Activate => "fold at the cursor, or follow a link",
             Action::OpenLink => "open selected link",
             Action::NextLink => "select next link",
             Action::PreviousLink => "select previous link",
-            Action::ToggleFold => "toggle section",
-            Action::CollapseFold => "collapse section",
-            Action::ExpandFold => "expand section",
-            Action::CollapseAll => "collapse all sections",
-            Action::ExpandAll => "expand all sections",
+            Action::ToggleFold => "toggle the section or container at the cursor",
+            Action::CollapseFold => "collapse the section or container",
+            Action::ExpandFold => "expand the section or container",
+            Action::CollapseAll => "collapse everything foldable",
+            Action::ExpandAll => "expand everything foldable",
             Action::Help => "help",
             Action::CommandPrompt => "command line (: set a setting)",
             Action::ToggleMermaidSource => "toggle mermaid source",
+            Action::ParentNode => "move out to the enclosing node",
+            Action::FirstChild => "move in to the first node inside",
         }
     }
 }

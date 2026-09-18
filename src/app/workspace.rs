@@ -44,6 +44,7 @@ use crate::app::paths;
 use crate::app::state::{App, AppEnv, AppOptions};
 use crate::config::keys::KeyMap;
 use crate::config::Config;
+use crate::document::FormatRequest;
 use crate::render::terminal::{PaneDivider, TabBar};
 use crate::terminal::capabilities::Capabilities;
 
@@ -172,6 +173,9 @@ pub struct Workspace {
     caps: Capabilities,
     width_override: Option<u16>,
     debug: bool,
+    /// The format request every document opened in this session is read with,
+    /// so `:open` agrees with the command line.
+    format: FormatRequest,
     size: (u16, u16),
     quit: bool,
 }
@@ -199,6 +203,7 @@ impl Workspace {
         caps: Capabilities,
         width_override: Option<u16>,
         debug: bool,
+        format: FormatRequest,
     ) -> Workspace {
         let size = first.size();
         let mut workspace = Workspace {
@@ -209,6 +214,7 @@ impl Workspace {
             caps,
             width_override,
             debug,
+            format,
             size,
             quit: false,
         };
@@ -594,11 +600,17 @@ impl Workspace {
     fn load(&self, path: &Path) -> Result<App, String> {
         let bytes =
             std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let source = match String::from_utf8(bytes) {
+        let text = match String::from_utf8(bytes) {
             Ok(text) => text,
             Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
         };
-        let doc = crate::document::parse(&source);
+        // `:open` detects the format exactly the way the command line does —
+        // the same call, the same session-wide `--format` — so a Markdown
+        // document and a YAML one can sit side by side in one split.
+        let source = crate::document::SourceDocument::new(path.display().to_string(), text);
+        let doc = crate::document::load(self.format, source)
+            .map_err(|error| error.report())?
+            .model;
         let color = crate::app::color_level(self.config.color, &self.caps);
         let theme = crate::app::resolve_theme(&self.config.theme, color);
         let diagrams =

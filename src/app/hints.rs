@@ -11,6 +11,7 @@
 //! `[keys]` bindings are reflected. An action the user has unbound produces no
 //! row at all rather than a row with an empty key.
 
+use crate::document::{DocumentCapabilities, DocumentKind};
 use crate::app::state::Mode;
 use crate::config::actions::Action;
 use crate::config::keys::KeyMap;
@@ -54,10 +55,20 @@ pub(crate) struct HintContext {
     pub(crate) mode: Mode,
     /// The current view can actually scroll horizontally.
     pub(crate) can_scroll_horizontally: bool,
+    /// What the document being read supports.
+    ///
+    /// This is what makes the sidebar honest across formats: a key whose
+    /// action means nothing for this document is not offered, rather than
+    /// offered and then answered with a status message.
+    pub(crate) capabilities: DocumentCapabilities,
+    /// Which format the document was read as, which decides the wording — a
+    /// Markdown reader looks for headings, a YAML reader for structure.
+    pub(crate) format: DocumentKind,
     /// The visible region contains at least one link.
     pub(crate) link_in_view: bool,
-    /// The cursor line is a heading (so `Enter` folds instead of following).
-    pub(crate) cursor_on_heading: bool,
+    /// The cursor is on a structural row (so `Enter` folds instead of
+    /// following a link).
+    pub(crate) cursor_on_structural: bool,
     /// The cursor is at or near a Mermaid diagram.
     pub(crate) near_diagram: bool,
     /// A search is active and has matches.
@@ -79,8 +90,10 @@ impl Default for HintContext {
         Self {
             mode: Mode::Normal,
             can_scroll_horizontally: false,
+            capabilities: DocumentCapabilities::MARKDOWN,
+            format: DocumentKind::Markdown,
             link_in_view: false,
-            cursor_on_heading: false,
+            cursor_on_structural: false,
             near_diagram: false,
             search_active: false,
             mouse_available: false,
@@ -226,32 +239,43 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
         ));
     }
 
-    let mut fold_rows = vec![
-        row(keys, Action::ToggleFold, "toggle section"),
-        pair(
-            keys,
-            (Action::CollapseFold, "collapse"),
-            (Action::ExpandFold, "expand"),
-            "collapse/expand",
-        ),
-        pair(
-            keys,
-            (Action::CollapseAll, "collapse all"),
-            (Action::ExpandAll, "expand all"),
-            "all sections",
-        ),
-    ];
-    // `Enter` folds when the cursor is on a heading and follows a link
-    // otherwise — exactly what `App::activate` does, so the row appears in
-    // one group or the other, never in both. Its label says what is
-    // context-dependent about it: unlike `za`, which always acts on the
-    // section the cursor is *inside*, `Enter` acts on the heading the cursor
-    // is *on*.
-    if ctx.cursor_on_heading {
-        fold_rows.insert(0, row(keys, Action::Activate, "fold at cursor"));
-    }
+    // The words differ because the thing does: a Markdown reader folds a
+    // section, a JSON or YAML reader folds a container.
+    let (unit, units) = match ctx.format {
+        DocumentKind::Markdown => ("section", "all sections"),
+        _ => ("container", "all containers"),
+    };
+    let fold = if ctx.capabilities.folding {
+        let mut fold_rows = vec![
+            row(keys, Action::ToggleFold, &format!("toggle {unit}")),
+            pair(
+                keys,
+                (Action::CollapseFold, "collapse"),
+                (Action::ExpandFold, "expand"),
+                "collapse/expand",
+            ),
+            pair(
+                keys,
+                (Action::CollapseAll, "collapse all"),
+                (Action::ExpandAll, "expand all"),
+                units,
+            ),
+        ];
+        // `Enter` folds when the cursor is on a structural row and follows a
+        // link otherwise — exactly what `App::activate` does, so the row
+        // appears in one group or the other, never in both. Its label says
+        // what is context-dependent about it: unlike `za`, which always acts
+        // on the unit the cursor is *inside*, `Enter` acts on the one the
+        // cursor is *on*.
+        if ctx.cursor_on_structural {
+            fold_rows.insert(0, row(keys, Action::Activate, "fold at cursor"));
+        }
+        group("Fold", 3, fold_rows)
+    } else {
+        None
+    };
 
-    let links = if ctx.link_in_view {
+    let links = if ctx.capabilities.links && ctx.link_in_view {
         let mut rows = vec![
             pair(
                 keys,
@@ -261,10 +285,46 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
             ),
             row(keys, Action::OpenLink, "open"),
         ];
-        if !ctx.cursor_on_heading {
+        if !ctx.cursor_on_structural {
             rows.push(row(keys, Action::Activate, "follow at cursor"));
         }
         group("Links", 5, rows)
+    } else {
+        None
+    };
+
+    // Markdown headings, JSON and YAML containers: the same two keys, named
+    // after whatever the document being read actually has.
+    let structure = if ctx.capabilities.hierarchy_navigation {
+        let (next, previous) = match ctx.format {
+            DocumentKind::Markdown => ("next heading", "prev heading"),
+            _ => ("next node", "prev node"),
+        };
+        let mut rows = vec![pair(
+            keys,
+            (Action::NextHeading, next),
+            (Action::PreviousHeading, previous),
+            "next/prev",
+        )];
+        if ctx.capabilities.sibling_navigation {
+            rows.push(pair(
+                keys,
+                (Action::NextHeadingSameLevel, "next sibling"),
+                (Action::PreviousHeadingSameLevel, "prev sibling"),
+                "same level",
+            ));
+            rows.push(pair(
+                keys,
+                (Action::ParentNode, "out"),
+                (Action::FirstChild, "in"),
+                "out/in",
+            ));
+        }
+        let title = match ctx.format {
+            DocumentKind::Markdown => "Headings",
+            _ => "Structure",
+        };
+        group(title, 2, rows)
     } else {
         None
     };
@@ -305,7 +365,15 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
     };
 
     let mut view_rows = vec![
-        row(keys, Action::ToggleToc, "contents"),
+        row(
+            keys,
+            Action::ToggleToc,
+            if ctx.format == DocumentKind::Markdown {
+                "contents"
+            } else {
+                "outline"
+            },
+        ),
         row(keys, Action::ToggleKeyHints, "hide hints"),
     ];
     // Only worth offering where the terminal reports mouse events at all, and
@@ -330,25 +398,8 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
 
     [
         group("Move", 0, move_rows),
-        group(
-            "Headings",
-            2,
-            vec![
-                pair(
-                    keys,
-                    (Action::NextHeading, "next heading"),
-                    (Action::PreviousHeading, "prev heading"),
-                    "next/prev",
-                ),
-                pair(
-                    keys,
-                    (Action::NextHeadingSameLevel, "next sibling"),
-                    (Action::PreviousHeadingSameLevel, "prev sibling"),
-                    "same level",
-                ),
-            ],
-        ),
-        group("Fold", 3, fold_rows),
+        structure,
+        fold,
         group("Search", 4, search_rows),
         links,
         diagram,
