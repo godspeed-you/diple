@@ -35,7 +35,7 @@ mouse = true            # enable mouse reporting where supported
 toc = false             # start with the table-of-contents sidebar open
 key_hints = false       # start with the key hints sidebar open
 line_numbers = false    # document line numbers
-wrap = true             # reflow paragraphs to the terminal width
+wrap = true             # reflow prose and long JSON/YAML rows to the width
 max_width = 160         # cap the line width in columns; 0 = the full width
 center = true           # centre the document between the sidebars
 
@@ -243,11 +243,18 @@ does not.
 | `indent` | `2` | columns one nesting level is indented by; `1`–`16`. Two is the convention both formats write themselves and keeps deep nesting inside the measure; eight would push a Kubernetes manifest off the right of the screen. Also `--structured-indent <COLUMNS>` |
 | `path` | `"auto"` | when the path of the selected node is shown in the status line. `auto` shows it when the line has room, `always` keeps it and gives up the progress counters instead, `never` drops it. Also `--path <auto\|always\|never>` |
 | `show_indices` | `true` | number sequence items: `[0]: "a"` in JSON, `[0] a` in YAML. `false` renders a YAML sequence item as `- a` and a JSON one with no label at all |
-| `collapsed_summary` | `true` | a collapsed container says what it holds — `{4 members}` for a JSON object, `{4 entries}` for a YAML mapping, `[3 items]` for a sequence — instead of only its fold marker |
+| `collapsed_summary` | `true` | a collapsed container says what it holds — `{4 members}` for a JSON object, `{4 entries}` for a YAML mapping, `[3 items]` for a sequence. `false` gives the terser `{…}` and `[…]`; an empty container keeps its explicit `{}` or `[]` either way |
 
 The path is a breadcrumb of the semantic node, `spec › containers › [0] ›
 image`, with `›` written as `>` where the terminal cannot do Unicode. Markdown
 has no semantic path, so `path` does nothing there.
+
+Top-level `wrap` applies to JSON and YAML as well as to prose: a long key or
+scalar wraps at the terminal width, with the continuation indented one level
+past its entry so the pair still reads as a pair. `wrap = false` renders such a
+row at full width for `h`/`l` to scroll through. A row whose own indentation
+has already consumed the terminal is left long either way — wrapping there
+would produce mostly blank left margin.
 
 Presentation is all these keys change. What diple shows of a document is
 decided by the document: YAML keeps its comments, anchors, tags and scalar
