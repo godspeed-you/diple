@@ -477,9 +477,25 @@ impl<'a> Builder<'a> {
             // A string is quoted so that its type survives without colour,
             // and so that leading or trailing space is visible.
             ScalarKind::String if self.quote_strings(value.style) => {
-                row.push("\"", self.theme.structured.punctuation);
-                row.push_matched(shown, style, matches, 0);
-                row.push("\"", self.theme.structured.punctuation);
+                // Inside quotes the content has to be unambiguous: an
+                // unescaped quote would look like the end of the string, and
+                // a newline sanitised to a space would be indistinguishable
+                // from one the author typed (spec §9.5). Each dialect is
+                // escaped the way that dialect escapes: JSON and YAML's
+                // double-quoted style with backslashes, YAML's single-quoted
+                // style by doubling the quote, which is all it has. Escaping
+                // moves the bytes about, so the match offsets move with them.
+                let single = self.doc.kind() != DocumentKind::Json
+                    && value.style == ScalarStyle::SingleQuoted;
+                let quote = if single { "'" } else { "\"" };
+                let (escaped, moved) = if single {
+                    escape_single_quoted(shown, matches)
+                } else {
+                    escape_quoted(shown, matches)
+                };
+                row.push(quote, self.theme.structured.punctuation);
+                row.push_matched(&escaped, style, moved, 0);
+                row.push(quote, self.theme.structured.punctuation);
             }
             _ => row.push_matched(shown, style, matches, 0),
         }
@@ -713,6 +729,89 @@ fn wrap_spans(
         out.push(line);
     }
     out
+}
+
+/// Re-escape a string for display between quotes, carrying the search match
+/// offsets across with it.
+///
+/// Returns the escaped text and the matches translated into its coordinates.
+/// A match that lands inside an escape sequence is widened to cover the whole
+/// sequence, because half of `\\n` is not a thing a reader can see.
+fn escape_quoted(text: &str, matches: Vec<Match>) -> (String, Vec<Match>) {
+    if !text.bytes().any(needs_escape) {
+        return (text.to_string(), matches);
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    // `map[i]` is where source byte `i` starts in `out`; one extra entry for
+    // the end, so a match's end offset maps too.
+    let mut map = Vec::with_capacity(text.len() + 1);
+    for (at, ch) in text.char_indices() {
+        while map.len() <= at {
+            map.push(out.len());
+        }
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    while map.len() <= text.len() {
+        map.push(out.len());
+    }
+    let at = |i: usize| map.get(i).copied().unwrap_or(out.len());
+    let moved = matches
+        .into_iter()
+        .map(|m| Match {
+            start: at(m.start),
+            end: at(m.end),
+            ..m
+        })
+        .collect();
+    (out, moved)
+}
+
+/// Re-escape a YAML single-quoted scalar: the only escape that style has is a
+/// doubled quote, and a backslash in it is a literal backslash.
+fn escape_single_quoted(text: &str, matches: Vec<Match>) -> (String, Vec<Match>) {
+    if !text.contains('\'') {
+        return (text.to_string(), matches);
+    }
+    let mut out = String::with_capacity(text.len() + 4);
+    let mut map = Vec::with_capacity(text.len() + 1);
+    for (at, ch) in text.char_indices() {
+        while map.len() <= at {
+            map.push(out.len());
+        }
+        if ch == '\'' {
+            out.push_str("''");
+        } else {
+            out.push(ch);
+        }
+    }
+    while map.len() <= text.len() {
+        map.push(out.len());
+    }
+    let at = |i: usize| map.get(i).copied().unwrap_or(out.len());
+    let moved = matches
+        .into_iter()
+        .map(|m| Match {
+            start: at(m.start),
+            end: at(m.end),
+            ..m
+        })
+        .collect();
+    (out, moved)
+}
+
+/// Whether a byte has to be written as an escape inside a quoted string.
+fn needs_escape(b: u8) -> bool {
+    b == b'"' || b == b'\\' || b < 0x20 || b == 0x7f
 }
 
 /// One row under construction.
@@ -1204,6 +1303,58 @@ mod tests {
             "the counts are gone: {terse:?}"
         );
         assert_eq!(terse.len(), verbose.len(), "the shape is unchanged");
+    }
+
+    /// Spec §9.5 and P3: what is shown between quotes must be unambiguous.
+    /// An unescaped quote would look like the end of the string and a
+    /// newline flattened to a space would be invisible, so each dialect is
+    /// escaped the way it escapes.
+    #[test]
+    fn a_quoted_string_is_escaped_the_way_its_dialect_escapes() {
+        let json = rows(
+            "t.json",
+            r#"{"q":"she said \"hi\"","nl":"one\ntwo\tthree","bs":"a\\b"}"#,
+            None,
+        );
+        assert_eq!(
+            json,
+            [
+                "{",
+                r#"  q: "she said \"hi\"""#,
+                r#"  nl: "one\ntwo\tthree""#,
+                r#"  bs: "a\\b""#,
+            ]
+        );
+
+        // YAML keeps the style the author wrote: single quotes double their
+        // own quote and leave a backslash alone.
+        let yaml = rows(
+            "t.yaml",
+            "a: 'it''s \\n here'\nb: \"x\\ty\"\nc: plain\n",
+            None,
+        );
+        assert_eq!(yaml, [r"a: 'it''s \n here'", r#"b: "x\ty""#, "c: plain"]);
+    }
+
+    /// Escaping moves the bytes about; a search hit must still be painted on
+    /// the text it matched.
+    #[test]
+    fn a_search_hit_survives_the_escaping() {
+        let doc = structured("t.json", r#"{"k":"a\"needle\"b"}"#);
+        let hits = doc.search_index().find("needle", false);
+        assert_eq!(hits.len(), 1);
+        let theme = Theme::dark();
+        let mut opts = LayoutOptions::new(80, &theme);
+        opts.search_matches = &hits;
+        let tree = layout(&doc, &opts);
+        let marked: String = tree
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| s.search_match)
+            .map(|s| s.text.clone())
+            .collect();
+        assert_eq!(marked, "needle", "the highlight landed on the match");
     }
 
     /// A long value wraps under its key rather than running off the screen,
