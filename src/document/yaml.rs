@@ -582,23 +582,32 @@ impl<'a> Loader<'a> {
         if matches!(error.kind(), ErrorKind::RecursionLimitExceeded) {
             return self.depth_error(marker);
         }
-        DocumentError::at_line_col(
+        DocumentError::at(
             self.source,
             DocumentKind::Yaml,
-            marker.line(),
-            marker.col() + 1,
+            Self::byte_of(marker),
             error.info(),
         )
     }
 
     fn depth_error(&self, marker: &Marker) -> DocumentError {
-        DocumentError::at_line_col(
+        DocumentError::at(
             self.source,
             DocumentKind::Yaml,
-            marker.line(),
-            marker.col() + 1,
+            Self::byte_of(marker),
             format!("nested more than {MAX_DEPTH} levels deep; diple refuses to go further"),
         )
+    }
+
+    /// Where a parser marker is, as a byte offset.
+    ///
+    /// The line and column are recomputed from that offset rather than taken
+    /// from the marker, because YAML counts a lone `\r` as a line break and
+    /// [`SourceDocument`] — which is format-neutral, and is what prints the
+    /// excerpt — does not. Taking the parser's line number would point at a
+    /// line the excerpt cannot show, and the caret would vanish.
+    fn byte_of(marker: &Marker) -> usize {
+        marker.byte_offset().unwrap_or(marker.index())
     }
 }
 
@@ -1270,5 +1279,21 @@ mod tests {
     fn an_unparseable_document_is_never_confident() {
         assert!(!confident("a: 1\n b: 2\n  c: 3\n"));
         assert!(!confident(""));
+    }
+    /// Found by fuzzing: YAML counts a lone `\r` as a line break and
+    /// `SourceDocument` does not, so taking the parser's line number pointed
+    /// at a line the excerpt could not show and the caret disappeared.
+    #[test]
+    fn an_error_after_a_lone_carriage_return_still_points_at_something() {
+        let source = SourceDocument::new("t.yaml", "\r\r*");
+        let error = parse(&source).expect_err("an anchor with no name");
+        let position = error.position.expect("a position");
+        assert!(
+            position.line >= 1 && position.line <= source.line_count(),
+            "{position:?} is inside a {}-line document",
+            source.line_count()
+        );
+        let report = error.report();
+        assert!(report.contains('^'), "the caret survived: {report}");
     }
 }

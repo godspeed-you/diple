@@ -21,9 +21,18 @@ pub enum PathSegment {
 
 impl PathSegment {
     /// The breadcrumb form: a key as itself, an index in brackets.
+    ///
+    /// Sanitised, because this is the one piece of document text that reaches
+    /// the terminal without passing through
+    /// [`StyledSpan::new`](crate::render::primitives::StyledSpan::new): the
+    /// status line draws the breadcrumb itself. A key containing an ESC would
+    /// otherwise be a way for a document to write to the terminal after all
+    /// (spec §20.4, AC-18). [`DocumentPath::canonical`] is deliberately not
+    /// sanitised — it is the internal, copyable form and has to stay true to
+    /// the source.
     pub fn label(&self) -> String {
         match self {
-            PathSegment::Key(key) => key.clone(),
+            PathSegment::Key(key) => crate::util::text::sanitize(key),
             PathSegment::Index(i) => format!("[{i}]"),
             PathSegment::Document(n) => format!("Document {n}"),
         }
@@ -218,5 +227,35 @@ mod tests {
         assert_eq!(p.breadcrumb(false), "Document 2 > spec");
         assert_eq!(p.canonical(), "#2/spec");
         assert_eq!(p.len(), 2);
+    }
+
+    /// AC-18: the status line draws the breadcrumb itself, so a key that
+    /// carries terminal control sequences must not be able to write to the
+    /// terminal through it.
+    #[test]
+    fn a_hostile_key_cannot_write_to_the_terminal_through_the_breadcrumb() {
+        let hostile = "\u{1b}[31mred\u{7}\r\u{202e}flip";
+        let p = DocumentPath::new(vec![
+            PathSegment::Key(hostile.to_string()),
+            PathSegment::Index(0),
+        ]);
+        for rendered in [
+            p.breadcrumb(true),
+            p.breadcrumb(false),
+            p.breadcrumb_within(200, true),
+            p.breadcrumb_within(12, false),
+            p.to_string(),
+        ] {
+            assert!(!rendered.contains('\u{1b}'), "ESC survived: {rendered:?}");
+            assert!(!rendered.contains('\u{7}'), "BEL survived: {rendered:?}");
+            assert!(!rendered.contains('\r'), "CR survived: {rendered:?}");
+            assert!(
+                !rendered.contains('\u{202e}'),
+                "a bidi override survived: {rendered:?}"
+            );
+        }
+        // The canonical form is the internal, copyable one and stays true to
+        // the source; it never reaches the terminal.
+        assert!(p.canonical().contains('\u{1b}'));
     }
 }
