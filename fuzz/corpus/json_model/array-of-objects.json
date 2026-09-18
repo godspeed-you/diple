@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "name": "Ada Lovelace",
+    "roles": ["author", "maintainer"],
+    "active": true
+  },
+  {
+    "id": 2,
+    "name": "Grace Hopper",
+    "roles": ["reviewer"],
+    "active": false
+  },
+  {
+    "id": 3,
+    "name": "Alan Turing",
+    "roles": [],
+    "active": null
+  }
+]

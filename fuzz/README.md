@@ -1,6 +1,13 @@
 # Fuzzing diple
 
-The rule: *the application must never panic on arbitrary document input*.
+The rule: *the application must never panic on arbitrary document input* —
+and, since 2.0 reads untrusted JSON and YAML, must not hang, recurse until the
+stack overflows, or emit terminal escapes the document chose (spec §23.4).
+
+The structured targets therefore assert rather than discard: a model that
+parses must have a dense, acyclic, containment-respecting node arena; a parse
+that fails must say where; a rendered row must name a real node and carry no
+control character.
 
 This is a separate crate with its own workspace, so `cargo build`, `cargo test`
 and `cargo clippy` in the repository root never see it.
@@ -15,6 +22,12 @@ and `cargo clippy` in the repository root never see it.
 | `unicode` | `layout::unicode` width / split / pad / wrap / tab helpers |
 | `config` | `config::loader::load_file` (TOML parsing and validation) |
 | `mermaid` | `mermaid::parser::parse` + the native terminal renderer |
+| `format_detect` | `document::load` — detection must be deterministic and must honour an explicit `--format` |
+| `json_model` | `document::json::parse` — the strict JSON parser and the arena it builds |
+| `yaml_model` | `document::yaml::parse` — anchors, aliases, merge keys, tags, multi-document streams |
+| `structured_layout` | `layout::structured` — the AC-18 target: no row may carry a terminal control |
+| `structured_path` | `DocumentPath::breadcrumb` / `breadcrumb_within` / `canonical` and their width contract |
+| `fold_reveal` | `FoldState` operations and `StructuredDocument::reveal` |
 
 The bodies live in `src/lib.rs`; `fuzz_targets/*.rs` are thin libFuzzer shims.
 Seed corpora are in `corpus/<target>/`, derived from `tests/fixtures/`.

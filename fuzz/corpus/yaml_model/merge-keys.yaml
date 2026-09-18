@@ -1,0 +1,6 @@
+base: &b
+  a: 1
+  b: 2
+derived:
+  <<: *b
+  b: 3

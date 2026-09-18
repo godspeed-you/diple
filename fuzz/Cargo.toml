@@ -64,3 +64,45 @@ path = "fuzz_targets/mermaid.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "format_detect"
+path = "fuzz_targets/format_detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_model"
+path = "fuzz_targets/json_model.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "yaml_model"
+path = "fuzz_targets/yaml_model.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_layout"
+path = "fuzz_targets/structured_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structured_path"
+path = "fuzz_targets/structured_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fold_reveal"
+path = "fuzz_targets/fold_reveal.rs"
+test = false
+doc = false
+bench = false

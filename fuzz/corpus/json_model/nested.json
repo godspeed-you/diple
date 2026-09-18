@@ -1,0 +1,25 @@
+{
+  "name": "diple",
+  "version": "2.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/godspeed-you/diple",
+    "mirrors": {
+      "primary": "origin",
+      "backup": null
+    }
+  },
+  "build": {
+    "features": ["syntax-onig", "syntax-fancy"],
+    "profile": {
+      "release": {
+        "lto": true,
+        "codegen-units": 1,
+        "strip": "symbols"
+      }
+    }
+  },
+  "keywords": ["markdown", "pager", "terminal"],
+  "maintained": true,
+  "downloads": 128947
+}

@@ -21,13 +21,19 @@ use std::time::{Duration, Instant};
 
 type Target = (&'static str, fn(&[u8]));
 
-const TARGETS: [Target; 6] = [
+const TARGETS: [Target; 12] = [
     ("parse_markdown", diple_fuzz::parse_markdown),
     ("layout", diple_fuzz::layout),
     ("table", diple_fuzz::table),
     ("unicode", diple_fuzz::unicode_helpers),
     ("config", diple_fuzz::config),
     ("mermaid", diple_fuzz::mermaid),
+    ("format_detect", diple_fuzz::format_detect),
+    ("json_model", diple_fuzz::json_model),
+    ("yaml_model", diple_fuzz::yaml_model),
+    ("structured_layout", diple_fuzz::structured_layout),
+    ("structured_path", diple_fuzz::structured_path),
+    ("fold_reveal", diple_fuzz::fold_reveal),
 ];
 
 /// xorshift64* — a deterministic PRNG so a failing run is reproducible from
