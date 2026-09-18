@@ -530,4 +530,49 @@ mod tests {
         assert_eq!(doc.outermost_fold(0), 0);
         assert_eq!(DocumentModel::default().node_count(), 0);
     }
+    /// Spec §12.3: the `{` / `}` rule "must be symmetric and test-covered".
+    ///
+    /// Symmetric here does not mean the two are inverses — Markdown's "same
+    /// or higher level" has never been one either, because climbing out of a
+    /// finished branch loses the level you came from. It means the two rules
+    /// are mirror images: each moves in its own direction only, each lands on
+    /// a node at the same level or shallower, and each is total, so walking
+    /// either way terminates. That has to hold in every format, or one key
+    /// means two things.
+    #[test]
+    fn sibling_navigation_is_symmetric_in_both_formats() {
+        for doc in [md(MD), json_doc(JSON)] {
+            let count = doc.node_count();
+            assert!(count > 3, "{:?} has something to walk", doc.kind());
+
+            for node in 0..count {
+                if let Some(next) = doc.next_sibling(node) {
+                    assert!(next > node, "{:?}: `}}` only moves forward", doc.kind());
+                }
+                if let Some(previous) = doc.previous_sibling(node) {
+                    assert!(
+                        previous < node,
+                        "{:?}: `{{` only moves backward",
+                        doc.kind()
+                    );
+                }
+            }
+
+            // Walking forward from the first node and then back from the last
+            // both terminate and visit strictly monotonic runs.
+            for forward in [true, false] {
+                let mut cursor = if forward { 0 } else { count - 1 };
+                let mut steps = 0usize;
+                while let Some(next) = if forward {
+                    doc.next_sibling(cursor)
+                } else {
+                    doc.previous_sibling(cursor)
+                } {
+                    cursor = next;
+                    steps += 1;
+                    assert!(steps <= count, "{:?}: the walk does not end", doc.kind());
+                }
+            }
+        }
+    }
 }
