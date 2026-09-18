@@ -229,6 +229,29 @@ mod tests {
     use crate::config::actions::Action;
     use crate::document::markdown::NodeKind;
 
+    /// Spec §12.5: folding hides content in the document, never entries in
+    /// the outline. A reader collapses a branch precisely so they can still
+    /// see it in the overview without it filling the screen.
+    #[test]
+    fn collapsing_a_branch_does_not_remove_it_from_the_outline() {
+        let mut a = app();
+        a.apply(Action::ToggleToc);
+        let before: Vec<String> = a.toc.entries.iter().map(|e| e.text.clone()).collect();
+        assert!(before.len() > 2, "something to collapse: {before:?}");
+
+        a.apply(Action::CollapseAll);
+        let after: Vec<String> = a.toc.entries.iter().map(|e| e.text.clone()).collect();
+        assert_eq!(after, before, "every entry survived `zM`");
+        assert!(
+            a.tree().len() < before.len() + 4,
+            "while the document itself did shrink"
+        );
+
+        a.apply(Action::ExpandAll);
+        let restored: Vec<String> = a.toc.entries.iter().map(|e| e.text.clone()).collect();
+        assert_eq!(restored, before);
+    }
+
     /// The outline and `]` are two ways to ask for the same thing, so they
     /// must put the reader in the same place.
     #[test]

@@ -126,6 +126,7 @@ pub struct LayoutFingerprint {
     lazy_code: bool,
     structured_indent: usize,
     show_indices: bool,
+    collapsed_summary: bool,
 }
 
 /// Everything the layout engine needs besides the document.
@@ -163,6 +164,9 @@ pub struct LayoutOptions<'a> {
     pub footnotes: bool,
     /// Columns one nesting level of a structured document is indented by.
     pub structured_indent: usize,
+    /// Say what a collapsed container holds (`{3 members}`) rather than just
+    /// that it holds something (`{…}`).
+    pub collapsed_summary: bool,
     /// Show `[0]`-style indices on sequence items.
     ///
     /// With this off, YAML falls back to its own `-` marker and JSON to bare
@@ -199,6 +203,7 @@ impl<'a> LayoutOptions<'a> {
             lazy_code: false,
             structured_indent: 2,
             show_indices: true,
+            collapsed_summary: true,
         }
     }
 
@@ -228,6 +233,7 @@ impl<'a> LayoutOptions<'a> {
         // value from which the structure cannot be read back.
         self.structured_indent = usize::from(config.structured.indent).max(1);
         self.show_indices = config.structured.show_indices;
+        self.collapsed_summary = config.structured.collapsed_summary;
     }
 
     /// With a fold state (enables fold markers and section elision).
@@ -281,6 +287,7 @@ impl<'a> LayoutOptions<'a> {
             lazy_code: self.lazy_code,
             structured_indent: self.structured_indent,
             show_indices: self.show_indices,
+            collapsed_summary: self.collapsed_summary,
         }
     }
 

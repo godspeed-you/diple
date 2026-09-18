@@ -409,10 +409,17 @@ impl<'a> Builder<'a> {
             return;
         }
         if self.collapsed(node) {
-            let summary = self
-                .doc
-                .collapsed_summary(node)
-                .unwrap_or_else(|| format!("{open}{close}"));
+            // `structured.collapsed_summary = false` is a reader asking for
+            // the terser shape; the ellipsis still says the container has
+            // something in it, which is what §11.3 is protecting.
+            let summary = if self.opts.collapsed_summary {
+                self.doc
+                    .collapsed_summary(node)
+                    .unwrap_or_else(|| format!("{open}{close}"))
+            } else {
+                let dots = if self.opts.unicode { "\u{2026}" } else { "..." };
+                format!("{open}{dots}{close}")
+            };
             row.push(&summary, self.theme.structured.folded);
             return;
         }
@@ -1155,6 +1162,48 @@ mod tests {
         let shown = rows("t.yaml", src, None).join("\n");
         assert!(!shown.contains('\u{1b}'), "{shown:?}");
         assert!(!shown.contains('\u{7}'), "{shown:?}");
+    }
+
+    /// `structured.collapsed_summary` is a real setting, not a decoration:
+    /// turning it off gives the terser shape while still saying the container
+    /// is not empty (spec §11.3, §16.2).
+    #[test]
+    fn the_collapsed_summary_setting_changes_what_a_fold_says() {
+        let src = r#"{"metadata": {"a": 1, "b": 2}, "list": [1, 2, 3]}"#;
+        let doc = structured("t.json", src);
+        let theme = Theme::dark();
+        let mut folds = FoldState::from_parents(doc.fold_parents().to_vec());
+        folds.collapse_all();
+
+        let mut opts = LayoutOptions::new(80, &theme);
+        opts.folds = Some(&folds);
+        let verbose: Vec<String> = layout(&doc, &opts)
+            .lines
+            .iter()
+            .map(|l| l.to_text().trim_end().to_string())
+            .collect();
+        assert!(
+            verbose.iter().any(|l| l.contains("{2 members}")),
+            "{verbose:?}"
+        );
+        assert!(
+            verbose.iter().any(|l| l.contains("[3 items]")),
+            "{verbose:?}"
+        );
+
+        opts.collapsed_summary = false;
+        let terse: Vec<String> = layout(&doc, &opts)
+            .lines
+            .iter()
+            .map(|l| l.to_text().trim_end().to_string())
+            .collect();
+        assert!(terse.iter().any(|l| l.contains("{\u{2026}}")), "{terse:?}");
+        assert!(terse.iter().any(|l| l.contains("[\u{2026}]")), "{terse:?}");
+        assert!(
+            !terse.iter().any(|l| l.contains("members")),
+            "the counts are gone: {terse:?}"
+        );
+        assert_eq!(terse.len(), verbose.len(), "the shape is unchanged");
     }
 
     /// A long value wraps under its key rather than running off the screen,
