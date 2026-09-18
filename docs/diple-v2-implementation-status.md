@@ -364,6 +364,7 @@ Every gate below was run from a clean tree at `f6e8ba7`.
 | `cargo doc --no-deps` | 0 warnings |
 | `cargo bench --no-run` | builds |
 | `cargo +nightly fuzz build` | all 12 targets build |
+| `cargo check --release --target …` | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` (pure-Rust regex) all clean. The musl build *with* the oniguruma engine cannot be checked here — `onig_sys` needs a musl C toolchain this machine does not have — which is an environment limit, not a code one; CI installs it. |
 | man page (`--generate-man`, `man --warnings`) | 0 warnings; CI's own option sweep passes |
 | shell completions (bash/zsh/fish) | generated, `bash -n` clean, include the new flags |
 
