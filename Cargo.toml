@@ -1,18 +1,20 @@
 [package]
 name = "diple"
-version = "1.2.0"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.81"
 authors = ["Marcel Arentz <gdspd_you@open-one.de>"]
 # Doubles as the Debian synopsis, which must stay on one short line.
-description = "Interactive terminal Markdown reader with folding and diagrams"
+description = "Interactive terminal reader for structured documents"
 license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/godspeed-you/diple"
 repository = "https://github.com/godspeed-you/diple"
 documentation = "https://docs.rs/diple"
 categories = ["command-line-utilities", "text-processing"]
-keywords = ["markdown", "pager", "terminal", "tui", "mermaid"]
+# crates.io allows five; `tui` and `mermaid` gave way to the two formats
+# that 2.0 made first-class, since those are what someone searches for.
+keywords = ["markdown", "json", "yaml", "pager", "terminal"]
 # Keep the published crate small: the benches, the fuzz crate and the CI
 # plumbing are not needed to build or use diple. `tests/` stays in, snapshots
 # included, so `cargo package` ships a crate whose test suite actually runs.
@@ -156,11 +158,14 @@ section = "text"
 priority = "optional"
 depends = "$auto"
 extended-description = """
-diple renders Markdown in the terminal the way a pager renders text: it keeps
-the document's structure instead of flattening it. Headings become navigable,
-sections fold, tables are laid out to the terminal width, code blocks are
-syntax highlighted, links are followable and Mermaid diagrams are drawn with a
-built-in renderer (or through mermaid-cli when it is available).
+diple reads Markdown, JSON and YAML in the terminal the way a pager reads
+text, except that it keeps the document's structure instead of flattening it.
+It does not merely syntax highlight these formats: it parses them, so folding,
+navigation, search and the outline operate on semantic nodes. Headings and
+objects, sections and mappings fold; tables are laid out to the terminal
+width; code blocks are syntax highlighted; links are followable; YAML keeps
+its comments, anchors and tags; and Mermaid diagrams are drawn with a built-in
+renderer (or through mermaid-cli when it is available).
 """
 assets = [
     ["target/release/diple", "usr/bin/", "755"],
@@ -185,7 +190,7 @@ depends = ""
 # Same prerequisite as the .deb: generate `target/assets/*` first, then run
 # `cargo generate-rpm`.
 [package.metadata.generate-rpm]
-summary = "Interactive terminal Markdown reader"
+summary = "Interactive terminal reader for structured documents"
 license = "MIT"
 assets = [
     { source = "target/release/diple", dest = "/usr/bin/diple", mode = "755" },

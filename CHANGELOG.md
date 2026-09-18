@@ -11,6 +11,113 @@ at the top for work that has not shipped yet.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-18 — Structured Documents
+
+diple is now `less` for structured documents. JSON and YAML join Markdown as
+first-class semantic document formats with navigation, folding, search, paths
+and outlines.
+
+This is one reader that learned what a document can be, not two parsers bolted
+to the side of a Markdown viewer. diple does not syntax-highlight JSON and
+YAML: it parses them, and everything the reader already did — `]` to the next
+piece of structure, `za` to fold it away, `/` to search, `t` for the outline —
+now operates on whichever semantic nodes the open document has. Markdown keeps
+every key, every setting and every behaviour it had in 1.2.
+
+### Added
+
+- **JSON and YAML as document formats.** `diple response.json` and `diple
+  deployment.yaml` open natively, and so do `kubectl get deployment nginx -o
+  yaml | diple` and `curl -s … | diple`. The format is decided by `--format`
+  first, then the file name (`.json`, `.yaml`, `.yml`), then a confident look
+  at the content, and finally Markdown — which is where prose, a bare scalar
+  and anything ambiguous stay, because a reader's prose must never be claimed
+  by a permissive parser. A format *stated* by `--format` or by the file name
+  is binding: a `config.yaml` that does not parse is a YAML error naming the
+  line, the column and the offending source, with a non-zero exit, rather than
+  a Markdown document that looks almost right. A format merely *guessed* from
+  anonymous input falls back to Markdown, since nothing had claimed it.
+- **Structure navigation in JSON and YAML.** `]` and `[` walk the containers —
+  objects, arrays, mappings and sequences — exactly as they walk headings in
+  Markdown; scalars are not stops, so `]` on a long array is not another `j`.
+  `}` and `{` move between siblings and climb out of a finished branch, the
+  same "same or higher level" rule Markdown has always used.
+- **`H` and `L`** (`parent_node`, `first_child`) move out to the enclosing node
+  and in to the first node inside. `h` and `l` scroll sideways; their shifted
+  forms move the same axis one level up. Both keys were unbound before, so no
+  existing binding changed meaning, and both are rebindable in `[keys]` and
+  listed in `?` and the key hints like every other action.
+- **Semantic folding for structured documents.** Every container folds with
+  `za`, `zc`, `zo`, `Enter`, `zM` and `zR`, and a collapsed one says what it
+  holds: `{4 members}`, `{4 entries}`, `[3 items]`. The document root is not a
+  fold target — collapsing it would replace the shape of the file with a single
+  brace.
+- **The path of the selected node** in the status line — `spec › containers ›
+  [0] › image` — so a deeply nested value is never anonymous. `--path
+  <auto|always|never>` and `structured.path` decide when it is shown; the
+  status line also names the format it read.
+- **An outline for structured documents.** `t` opens one entry per node, with
+  scalar values previewed and trimmed, built the first time it is opened.
+- **Search over every field of a node.** A hit may be in a key, a value, or a
+  YAML comment, tag or anchor name, and the right run is highlighted; jumping
+  to a hidden match still expands the collapsed ancestors that hide it.
+- **YAML read as a reader needs it**, not as a deserializer leaves it:
+  comments, anchors, tags, `%YAML`/`%TAG` directives, block, flow and quoted
+  scalar styles and multi-document streams all survive into the view. An alias
+  is shown as `*name` and never expanded — the honest reading, and the one that
+  makes an alias bomb cost what the source costs — and a merge key (`<<`) is
+  shown rather than performed. Types follow the YAML 1.2 core schema.
+- **JSON read strictly** — RFC 8259 and nothing else, parsed by diple itself so
+  that source order, duplicate keys, the lexical spelling of numbers (`1e6`
+  stays `1e6`) and byte spans all survive. Duplicate keys are kept and both
+  shown: a DOM that keeps the last one silently deletes part of the document.
+  Comments and trailing commas are refused, and `.jsonc` is deliberately not a
+  recognised extension.
+- **New options.** `--format <auto|markdown|json|yaml>`, `--structured-indent
+  <COLUMNS>`, `--path <auto|always|never>`, the top-level `format` key and a
+  `[structured]` section (`indent = 2`, `path = "auto"`, `show_indices = true`,
+  `collapsed_summary = true`). Every one has a default that needs no
+  configuration, and all of them are settable at `:` and completed by `Tab`.
+- **A `DOCUMENT FORMATS` section in the man page**, and the shell completions
+  now offer the new options and their values.
+
+### Changed
+
+- The product is an interactive terminal reader for **structured documents**;
+  the crate description, keywords and the Debian, RPM and Arch package
+  descriptions say so. `tui` and `mermaid` gave way to `json` and `yaml` in the
+  crates.io keywords, which are capped at five.
+- Non-interactive output covers the new formats: a piped JSON or YAML document
+  is written as plain text, fully expanded and in source order, so `diple
+  response.json | head -20` is readable and reproducible. Minified JSON is
+  never printed back.
+- Tabs and splits are format-independent: `:open` detects a format exactly the
+  way the command line does, so a Markdown document and a YAML document can
+  sit side by side in one session.
+- The help overlay and the key hints follow the open document's capabilities —
+  the link keys are offered where links exist, the structure keys where
+  structure does, and an action that cannot apply says so rather than doing
+  nothing.
+
+### Breaking
+
+- **The public Rust API changed.** The Markdown-specific AST is no longer the
+  document: `diple::document` now exposes a format-neutral `DocumentModel`
+  (Markdown or structured) with the vocabulary the application actually uses —
+  folds, outline, path, search, capabilities — plus `SourceDocument`,
+  `FormatRequest` and a `load` entry point. Code that reached for the old
+  `document::parse` and the Markdown `Document` type must move to
+  `DocumentModel` and its `as_markdown()` escape hatch. The alternative was to
+  keep a Markdown-only type under a generic-sounding name, which would be a
+  worse long-term boundary than a major-version break.
+- **The minimum supported Rust version is now 1.81** (was 1.80), because the
+  YAML parser diple builds on requires it. It was raised deliberately and on
+  its own.
+- No key, configuration key or command-line option was removed, renamed or
+  given a different meaning. Existing configuration files stay valid, existing
+  bindings keep doing what they did, and `diple README.md` and `cat README.md |
+  diple` behave exactly as before.
+
 ## [1.2.0] - 2026-08-26
 
 Several documents in one session: side by side, stacked or in tabs.
@@ -211,7 +318,8 @@ therefore still open:
 - Packaging: `.deb`, `.rpm`, an Arch `PKGBUILD`, standalone Linux tarballs, a
   man page and bash/zsh/fish completions.
 
-[Unreleased]: https://github.com/godspeed-you/diple/compare/v1.2.0...main
+[Unreleased]: https://github.com/godspeed-you/diple/compare/v2.0.0...main
+[2.0.0]: https://github.com/godspeed-you/diple/releases/tag/v2.0.0
 [1.2.0]: https://github.com/godspeed-you/diple/releases/tag/v1.2.0
 [1.1.0]: https://github.com/godspeed-you/diple/releases/tag/v1.1.0
 [1.0.0]: https://github.com/godspeed-you/diple/releases/tag/v1.0.0

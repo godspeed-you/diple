@@ -28,6 +28,7 @@ Environment overrides: `DIPLE_CONFIG`, `DIPLE_THEME`, `DIPLE_MERMAID`.
 ## Complete example with defaults
 
 ```toml
+format = "auto"         # auto | markdown | json | yaml — how a document is read
 theme = "auto"          # auto | dark | light | crt | cyberpunk | <name>
 color = "auto"          # auto | always | never
 mouse = true            # enable mouse reporting where supported
@@ -56,6 +57,12 @@ backend = "auto"        # auto | terminal | mmdc | source
 images = "auto"         # auto | always | never — image protocol usage
 mmdc_command = "mmdc"   # Mermaid CLI executable
 
+[structured]            # JSON and YAML only; Markdown ignores this section
+indent = 2              # columns per nesting level; 1..16
+path = "auto"           # auto | always | never — path of the selected node
+show_indices = true     # number sequence items as [0], [1], [2]
+collapsed_summary = true # say what a collapsed container holds
+
 [keys]
 # Overrides only; every unlisted action keeps its default binding.
 # See docs/keybindings.md for action names and key syntax.
@@ -72,6 +79,31 @@ previous_tab = "ctrl-p"
 ```
 
 ## Keys
+
+### `format`
+
+How a document is read: `auto`, `markdown`, `json` or `yaml`. It comes first in
+the file because it decides what the document *is*; every other key decides how
+it looks.
+
+`auto` — the default — takes the first answer of: a recognised extension
+(`.md`, `.markdown`, `.mdown`, `.mkd`; `.json`; `.yaml`, `.yml`), then a
+confident look at the content (a document opening with `{` or `[` that parses
+as strict JSON, or a YAML stream whose roots are all non-empty collections with
+a structural signal such as an anchor, a directive, nesting or a second
+document), then Markdown. Anything else — prose, a bare `42` on stdin, a
+`.jsonc` file — stays Markdown, because a reader's prose must never be claimed
+by a permissive parser.
+
+Naming a format instead of `auto` is binding for every document of the session,
+including those opened later with `:open`, and a document that then fails to
+parse is an error rather than a silent fall back to Markdown. `--format`
+overrides this key, as usual.
+
+The key is settable at `:` like any other, but a document is parsed once, when
+it is opened: `:format json` records a value and changes nothing on screen, and
+`:open` keeps using the format the session started with. Use `--format` to read
+something as a different format.
 
 ### `theme`
 
@@ -199,6 +231,29 @@ Inspect what diple detected for your terminal:
 ```bash
 diple --print-capabilities
 ```
+
+### `[structured]`
+
+How JSON and YAML documents are presented. Markdown ignores every key here:
+they describe a nesting tree, which is what a structured document has and prose
+does not.
+
+| Key | Default | Effect |
+|---|---|---|
+| `indent` | `2` | columns one nesting level is indented by; `1`–`16`. Two is the convention both formats write themselves and keeps deep nesting inside the measure; eight would push a Kubernetes manifest off the right of the screen. Also `--structured-indent <COLUMNS>` |
+| `path` | `"auto"` | when the path of the selected node is shown in the status line. `auto` shows it when the line has room, `always` keeps it and gives up the progress counters instead, `never` drops it. Also `--path <auto\|always\|never>` |
+| `show_indices` | `true` | number sequence items: `[0]: "a"` in JSON, `[0] a` in YAML. `false` renders a YAML sequence item as `- a` and a JSON one with no label at all |
+| `collapsed_summary` | `true` | a collapsed container says what it holds — `{4 members}` for a JSON object, `{4 entries}` for a YAML mapping, `[3 items]` for a sequence — instead of only its fold marker |
+
+The path is a breadcrumb of the semantic node, `spec › containers › [0] ›
+image`, with `›` written as `>` where the terminal cannot do Unicode. Markdown
+has no semantic path, so `path` does nothing there.
+
+Presentation is all these keys change. What diple shows of a document is
+decided by the document: YAML keeps its comments, anchors, tags and scalar
+styles, a YAML alias is shown as `*name` rather than expanded and a merge key
+is shown rather than performed; JSON keeps source order, duplicate keys and the
+spelling of its numbers. Neither is configurable, because it is the source.
 
 ## Error reporting
 

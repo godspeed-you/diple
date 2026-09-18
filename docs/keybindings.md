@@ -6,6 +6,29 @@ the same list with your own overrides applied.
 
 Keys follow `less` and Vim conventions where practical.
 
+## One interaction model, format-specific meaning
+
+No key changes its job between formats; what the document *is* changes what
+its structure is. In Markdown the structure is the headings and their
+sections, in JSON and YAML it is the containers — objects, arrays, mappings
+and sequences. Scalars are not stops, so `]` on a long array is not another
+`j`.
+
+| Key | Markdown | JSON/YAML |
+|---|---|---|
+| `Enter` | toggle the section under the cursor, or open the selected link | toggle the container under the cursor |
+| `[` `]` | previous / next heading | previous / next container |
+| `{` `}` | previous / next heading at the same or a higher level | previous / next sibling, climbing out of a finished branch |
+| `H` `L` | out to the parent heading / in to the first child heading | out to the enclosing node / in to the first node inside |
+| `za` `zc` `zo` | section fold | container fold |
+| `zM` `zR` | all sections | all containers |
+| `t` | table of contents | structure outline, one entry per node |
+| `/` `n` `N` | search the prose | search keys, values, YAML comments, tags and anchors |
+| `Tab` `Shift-Tab` `o` | select and open links | — (JSON and YAML have no links) |
+
+Every key that works in Markdown works exactly as it did before 2.0; `H` and
+`L` were unbound and are the only additions.
+
 ## Paging and scrolling
 
 | Keys | Action name | Description |
@@ -30,33 +53,59 @@ Keys follow `less` and Vim conventions where practical.
 | `N` | `previous_search` | previous search result |
 
 Search runs over document content, not over rendered terminal lines. Jumping to
-a match inside a collapsed section expands that section automatically.
+a match inside a collapsed section expands the collapsed ancestors of the match
+automatically. In JSON and YAML the searched content is every field of a node —
+its key or `[index]`, its value, and a YAML node's comments, tags and anchor
+names — so `/nginx` finds the key `nginx` and the image `nginx:1.27` alike.
 
-## Heading navigation
+## Structure navigation
 
 | Keys | Action name | Description |
 |---|---|---|
-| `]` | `next_heading` | next heading |
-| `[` | `previous_heading` | previous heading |
-| `}` | `next_heading_same_level` | next heading at the same or a higher level |
-| `{` | `previous_heading_same_level` | previous heading at the same or a higher level |
+| `]` | `next_heading` | next heading (Markdown) or container (JSON/YAML) |
+| `[` | `previous_heading` | previous heading or container |
+| `}` | `next_heading_same_level` | next sibling at the same or a higher level |
+| `{` | `previous_heading_same_level` | previous sibling at the same or a higher level |
+| `H` | `parent_node` | move out to the enclosing node |
+| `L` | `first_child` | move in to the first node inside |
 
-Heading jumps are semantic: they target the heading node, not a line number, and
+Structural jumps are semantic: they target the node, not a line number, and
 they remain correct after a terminal resize.
+
+`[` from a row that is not itself structural lands on the node it belongs to —
+the heading of the paragraph you are in, or the container of the entry you are
+on — which is the same "back goes to what I am under" rule in both cases.
+`}` and `{` stay within one level while there are siblings left and then climb
+out of the finished branch, matching Markdown's "same or higher level".
+
+`H` and `L` are the tree axis: `h` and `l` scroll sideways, and their shifted
+forms move one level of the hierarchy, which is the same axis one step up.
+In Markdown, `H` goes from a body node to its heading and from a heading to
+its parent heading, and `L` goes to the first child heading. Neither key was
+bound before 2.0, so nothing changed meaning.
 
 ## Folding
 
 | Keys | Action name | Description |
 |---|---|---|
-| `Enter` | `activate` | toggle the section under the cursor (or open a selected link) |
-| `za` | `toggle_fold` | toggle the current section |
-| `zc` | `collapse_fold` | collapse the current section |
-| `zo` | `expand_fold` | expand the current section |
-| `zM` | `collapse_all` | collapse all sections |
-| `zR` | `expand_all` | expand all sections |
+| `Enter` | `activate` | toggle the section or container under the cursor (or open a selected link) |
+| `za` | `toggle_fold` | toggle the current section or container |
+| `zc` | `collapse_fold` | collapse it |
+| `zo` | `expand_fold` | expand it |
+| `zM` | `collapse_all` | collapse everything foldable |
+| `zR` | `expand_all` | expand everything foldable |
 
 A collapsed section shows `▶ Heading`; an expanded one shows `▼ Heading`.
 Fold state lives for the current session only.
+
+In JSON and YAML every container is foldable and nothing else is: a scalar has
+nothing inside it, an alias is a reference rather than a subtree, and the
+document root is not a fold target — collapsing it would replace the shape of
+the file with a single brace. A collapsed container keeps its own row and says
+what it holds in place of its contents: `{4 members}` for a JSON object,
+`{4 entries}` for a YAML mapping, `[3 items]` for either kind of sequence. An
+empty container is drawn `{}` or `[]` whether or not it is folded. `za` on a
+top-level scalar entry therefore reports that there is nothing to fold.
 
 ## Links
 
@@ -67,6 +116,9 @@ Fold state lives for the current session only.
 | `o` | `open_link` | open the selected link with the configured opener |
 | `Enter` | `activate` | open the selected link, or follow an internal `#anchor` |
 
+Links are a Markdown capability; in a JSON or YAML document the link keys do
+nothing and the key hints leave them out, while `Enter` still folds.
+
 Internal links (`[text](#anchor)`) jump within the document. External links are
 handed to `links.opener` (default `xdg-open`). Where the terminal supports OSC 8,
 links are also emitted as native terminal hyperlinks.
@@ -75,7 +127,7 @@ links are also emitted as native terminal hyperlinks.
 
 | Keys | Action name | Description |
 |---|---|---|
-| `t` | `toggle_toc` | toggle the table-of-contents sidebar |
+| `t` | `toggle_toc` | toggle the outline sidebar (table of contents) |
 | `K` | `toggle_key_hints` | toggle the key hints sidebar |
 | `m` | `toggle_mouse` | toggle mouse reporting (off: select text with the mouse) |
 | `:` | `command_prompt` | open the command line to change a setting |
@@ -106,8 +158,14 @@ normal action name.
 `q` and `:q` close the focused pane, then the focused tab, and only leave when
 the last document is closed. `Ctrl-C` always leaves at once.
 
+For Markdown the sidebar holds one entry per heading. For JSON and YAML it
+holds one entry per node — containers by their key or `[index]`, scalars as
+`key: value` with the value trimmed to 32 columns — so the outline is the
+document's shape rather than a selection someone guessed at. It is built the
+first time the sidebar is opened.
+
 Inside the TOC sidebar, `j`/`k` move the selection and `Enter` jumps to the
-heading; the section currently shown in the document is marked. A jump keeps
+heading or node; the section currently shown in the document is marked. A jump keeps
 the focus in the sidebar, so `j`/`k` go on walking the outline and further
 jumps need no reopening; `Esc` or `t` hands the keys back to the document.
 

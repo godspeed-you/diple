@@ -1,22 +1,30 @@
 # diple
 
-**`less` for Markdown documents instead of text files.**
+**`less` for structured documents.**
 
 [![CI](https://github.com/godspeed-you/diple/actions/workflows/ci.yml/badge.svg)](https://github.com/godspeed-you/diple/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/godspeed-you/diple?sort=semver)](https://github.com/godspeed-you/diple/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/godspeed-you/diple)](LICENSE)
-[![Rust 1.80+](https://img.shields.io/badge/rust-1.80%2B-orange?logo=rust)](rust-toolchain.toml)
+[![Rust 1.81+](https://img.shields.io/badge/rust-1.81%2B-orange?logo=rust)](rust-toolchain.toml)
 
-An interactive terminal Markdown reader with semantic navigation, collapsible
-sections, terminal-aware tables, syntax-highlighted code and Mermaid diagrams.
+An interactive terminal reader for structured documents. Markdown, JSON and
+YAML are all first-class: semantic navigation, collapsible structure,
+terminal-aware tables, syntax-highlighted code and Mermaid diagrams.
 
-diple combines the rendering quality of tools such as `glow` with the
-interaction model of `less`. Markdown is treated as a structured document, not
-as colored text: navigation, folding and search operate on the document model,
-so they stay correct when the terminal is resized.
+diple does not merely syntax-highlight structured formats. It parses their
+structure, so folding, navigation, search and the outline operate on semantic
+nodes — a JSON object folds as an object, a YAML mapping entry is one unit, a
+Markdown section is one section. The consequence is the same for all three:
+the document model, not the rendered text, is what you move through, so it
+stays correct when the terminal is resized.
 
 ```bash
 diple README.md
+diple deployment.yaml
+diple response.json
+
+kubectl get deployment nginx -o yaml | diple
+curl -s https://api.example.com/state | diple
 ```
 
 ![diple in action](docs/demo.gif)
@@ -24,11 +32,20 @@ diple README.md
 ## Features
 
 - **Interactive pager** — never dumps into your shell scrollback
-- **Semantic heading navigation** — jump by heading, not by line number
-- **Collapsible sections** — fold any heading, `zM`/`zR` for the whole document
-- **Full-text search** — searches document content, and expands collapsed
-  sections containing a match
-- **Table of contents** — sidebar reflecting the real heading hierarchy
+- **Three formats, one interaction model** — Markdown, JSON and YAML, detected
+  from the file name and the content, or stated with `--format`
+- **Semantic navigation** — jump by heading in Markdown and by container in
+  JSON/YAML, never by line number; `H`/`L` move out to the parent and in to
+  the first child
+- **Collapsible structure** — fold any section, object, array or mapping,
+  `zM`/`zR` for the whole document; a collapsed container says what it holds
+  (`{4 members}`, `[3 items]`)
+- **Full-text search** — searches document content, including YAML keys,
+  comments, tags and anchors, and expands collapsed ancestors of a match
+- **Outline** — sidebar reflecting the real hierarchy: headings for Markdown,
+  the node tree with value previews for JSON and YAML
+- **Where am I** — the path of the selected node (`spec › containers › [0] ›
+  image`) in the status line for JSON and YAML
 - **Key hints sidebar** — `K` shows, on the right, the commands available right
   now, following the mode and the cursor context
 - **Command line** — `:` changes any setting while running, with completion and
@@ -38,6 +55,11 @@ diple README.md
 - **Terminal-aware tables** — column widths computed from content and terminal
   width, with wrapping or horizontal scrolling
 - **Syntax highlighting** — fenced code blocks, optional line numbers
+- **YAML as it was written** — comments, anchors, tags, block scalars and
+  multi-document streams survive; an alias is shown as `*name` rather than
+  expanded, and a merge key (`<<`) is shown rather than performed
+- **JSON as it was written** — strict RFC 8259, source order, duplicate keys
+  kept and numbers left in their own spelling (`1e6` stays `1e6`)
 - **Links** — keyboard selection, opening via `xdg-open`, OSC 8 hyperlinks
   where supported
 - **Mermaid diagrams** — rendered natively in the terminal, as images via
@@ -51,10 +73,10 @@ diple README.md
 
 ```bash
 # Debian / Ubuntu
-sudo apt install ./diple_1.2.0_amd64.deb
+sudo apt install ./diple_2.0.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./diple-1.2.0.x86_64.rpm
+sudo dnf install ./diple-2.0.0.x86_64.rpm
 
 # Arch Linux
 cd packaging/arch && makepkg -si
@@ -66,7 +88,7 @@ cd packaging/arch && makepkg -si
 cargo install --path .
 ```
 
-Requires Rust 1.80 or newer and a C compiler. The C compiler is needed for
+Requires Rust 1.81 or newer and a C compiler. The C compiler is needed for
 the oniguruma regex engine, which diple uses by default because it is what
 makes the startup budget reachable — a syntax definition is compiled on first
 use, and that cost lands on the first frame. If you cannot provide a C
@@ -95,15 +117,54 @@ diagrams that the built-in renderer does not cover.
 
 ```bash
 diple README.md            # read a file
+diple deployment.yaml      # …of any supported format
+diple response.json
 cat README.md | diple      # read from stdin
 diple < README.md          # read from a redirect
 git show HEAD:README.md | diple
+kubectl get deployment nginx -o yaml | diple
+curl -s https://api.example.com/state | diple
+diple --format json message.txt   # state the format yourself
 ```
 
 When output is not a terminal, diple prints the rendered document as plain
-text and exits — so `diple README.md | head -20` and CI usage behave sensibly.
+text and exits — fully expanded and in source order, so `diple response.json |
+head -20` and CI usage behave sensibly.
+
+### Supported formats
+
+| Format | Recognised by name | Semantic units |
+|---|---|---|
+| Markdown | `.md` `.markdown` `.mdown` `.mkd` | headings, sections, lists, tables, code blocks, links |
+| JSON | `.json` | objects, arrays, members, items, scalars |
+| YAML | `.yaml` `.yml` | documents, mappings, sequences, entries, scalars, anchors, aliases, tags, comments |
+
+The format is decided in this order, and the first rule that applies wins:
+
+1. **`--format <auto|markdown|json|yaml>`** — final; it beats both the file
+   name and the content. `diple --format markdown config.yaml` reads a YAML
+   file as prose, `diple --format json file.data` insists on JSON.
+2. **The file name**, per the table above.
+3. **The content**, but only a confident guess: a document that opens with `{`
+   or `[` and parses as strict JSON, or a YAML stream whose roots are all
+   non-empty collections with at least one structural signal. This is what
+   makes `kubectl get … -o yaml | diple` work with nothing to configure.
+4. **Markdown**, the fallback. Prose and anything else ambiguous stay Markdown.
+
+A format *stated* by `--format` or by the file name is binding: a `config.yaml`
+that does not parse is reported as a YAML error and diple exits non-zero
+rather than opening it as Markdown and looking almost right. A format merely
+*guessed* from the content of anonymous input falls back to Markdown instead,
+since nothing had claimed it.
+
+JSON with comments is not a format diple reads, so `.jsonc` is deliberately
+not recognised.
 
 ### Key bindings
+
+Structure keys mean the same thing in every format; what counts as structure
+follows the document. In Markdown that is the headings, in JSON and YAML the
+containers — objects, arrays, mappings and sequences.
 
 | Key | Action |
 |---|---|
@@ -112,13 +173,14 @@ text and exits — so `diple README.md | head -20` and CI usage behave sensibly.
 | `g` `G` | top / bottom |
 | `h` `l` `←` `→` | scroll horizontally |
 | `/` `n` `N` | search, next, previous |
-| `[` `]` | previous / next heading |
-| `{` `}` | previous / next heading at the same or a higher level |
-| `Enter` | toggle the section under the cursor, or open the selected link |
-| `za` `zc` `zo` | toggle / collapse / expand the current section |
+| `[` `]` | previous / next heading, or container |
+| `{` `}` | previous / next sibling at the same or a higher level |
+| `H` `L` | out to the enclosing node / in to the first node inside |
+| `Enter` | toggle the section or container under the cursor, or open the selected link |
+| `za` `zc` `zo` | toggle / collapse / expand the current section or container |
 | `zM` `zR` | collapse / expand everything |
-| `Tab` `Shift-Tab` `o` | select links, open the selected one |
-| `t` | toggle the table of contents |
+| `Tab` `Shift-Tab` `o` | select links, open the selected one (Markdown) |
+| `t` | toggle the outline (table of contents) |
 | `K` | toggle the key hints sidebar |
 | `m` | hand the mouse back to the terminal, to select text with it |
 | `:` | command line: `:center = false`, `:theme crt`, `:help` |
@@ -152,6 +214,8 @@ Settings apply to the whole session: `:theme crt` in one pane changes both.
 ```text
 diple [OPTIONS] [FILE]
 
+  --format <auto|markdown|json|yaml>
+  --structured-indent <COLUMNS>      --path <auto|always|never>
   --theme <auto|dark|light|NAME>     --color <auto|always|never>
   --width <COLUMNS>                  --max-width <COLUMNS>
   --center / --no-center             --mouse / --no-mouse
@@ -170,12 +234,17 @@ diple [OPTIONS] [FILE]
 `~/.config/diple/config.toml`:
 
 ```toml
+format = "auto"  # auto | markdown | json | yaml
 theme = "auto"   # auto | dark | light | crt | cyberpunk
 mouse = true
 toc = false
 key_hints = false
 max_width = 160
 center = true
+
+[structured]     # JSON and YAML only; Markdown ignores this section
+indent = 2
+path = "auto"
 
 [table]
 mode = "auto"
@@ -216,6 +285,38 @@ git show HEAD:README.md | diple
 - `man diple`
 
 ## Troubleshooting
+
+**The document opened as the wrong format.** The status line names the format
+diple decided on. Detection is deliberately conservative, so a file without a
+known extension — or a single-line YAML like `key: value` on stdin — stays
+Markdown rather than being claimed by a permissive parser. State the format:
+`diple --format yaml -`, `diple --format json message.txt`. `--format` beats
+both the file name and the content, so it also works the other way round:
+`--format markdown config.yaml` reads a YAML file as prose.
+
+**A YAML or JSON file will not open.** A format stated by `--format` or by the
+file name is binding, so a parse error is reported — with the file name, the
+line and column, the offending source and a caret — and diple exits non-zero
+instead of falling back to Markdown. Fix the document, or read it as Markdown
+with `--format markdown` to look at it as text.
+
+**YAML does not do what my program does with it.** diple reads a document, it
+does not resolve a configuration: an alias is shown as `*name` and never
+expanded, a merge key (`<<: *defaults`) is shown rather than performed, and
+`%TAG` handles are not substituted. Types follow the YAML 1.2 core schema
+only, so `yes` is a string, not a boolean, and a timestamp is a string. A
+collection used as a mapping key (`? …`, `[1, 2]: x`) is shown as it was
+written rather than as a subtree of its own.
+
+**JSON with comments or trailing commas is refused.** diple is strict RFC 8259
+on purpose, and `.jsonc` is not recognised, so such a file falls back to
+Markdown. Duplicate keys are the opposite case: both are kept and shown, since
+dropping one would silently delete part of the document.
+
+**A big file takes a moment.** diple reads the whole input and parses it once;
+there is no size limit and no truncation, and the outline and the syntax
+highlighting are computed only when they are needed. Nesting is capped at 1024
+levels, which is reported as an error rather than a crash.
 
 **Colors look wrong or are missing.** Run `diple --print-capabilities`; it
 reports what was detected and the evidence for each decision. `NO_COLOR` and a

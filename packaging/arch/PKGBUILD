@@ -1,8 +1,8 @@
 # Maintainer: Marcel Arentz <gdspd_you@open-one.de>
 pkgname=diple
-pkgver=1.2.0
+pkgver=2.0.0
 pkgrel=1
-pkgdesc="Interactive terminal Markdown reader with semantic navigation, folding, tables and Mermaid diagrams"
+pkgdesc="Interactive terminal reader for structured documents: Markdown, JSON and YAML with semantic navigation, folding and search"
 arch=('x86_64' 'aarch64')
 url="https://github.com/godspeed-you/diple"
 license=('MIT')
