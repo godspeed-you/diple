@@ -287,12 +287,14 @@ git show HEAD:README.md | diple
 ## Troubleshooting
 
 **The document opened as the wrong format.** The status line names the format
-diple decided on. Detection is deliberately conservative, so a file without a
-known extension — or a single-line YAML like `key: value` on stdin — stays
-Markdown rather than being claimed by a permissive parser. State the format:
-`diple --format yaml -`, `diple --format json message.txt`. `--format` beats
-both the file name and the content, so it also works the other way round:
-`--format markdown config.yaml` reads a YAML file as prose.
+diple decided on. A known extension settles it; otherwise the content has to
+make a confident case, so prose, a Markdown list and a single-line `key:
+value` all stay Markdown rather than being claimed by a permissive parser —
+while a `.data` file that really is a JSON object is read as one. State the
+format when the guess is not the one you wanted: `diple --format yaml -`,
+`diple --format json message.txt`. `--format` beats both the file name and the
+content, so it also works the other way round: `--format markdown config.yaml`
+reads a YAML file as prose.
 
 **A YAML or JSON file will not open.** A format stated by `--format` or by the
 file name is binding, so a parse error is reported — with the file name, the
