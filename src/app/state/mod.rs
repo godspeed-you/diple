@@ -39,6 +39,8 @@
 //!   toggle, the three things that live beside the document rather than in
 //!   it.
 
+#[cfg(test)]
+mod characterization;
 mod input;
 mod layout_cache;
 mod navigate;
