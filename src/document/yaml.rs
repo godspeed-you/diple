@@ -277,7 +277,10 @@ impl<'a> Loader<'a> {
                         self.set_key(StructuredKey {
                             text: format!("*{name}"),
                             span: range,
-                            complex: false,
+                            // Shown as the source wrote it, never quoted.
+                            complex: true,
+                            style: ScalarStyle::Plain,
+                            prefix: 0,
                         });
                     } else {
                         let meta = self.take_meta(0, None, Row::Leaf);
@@ -358,11 +361,10 @@ impl<'a> Loader<'a> {
         match self.frames.last_mut() {
             None => NodeRelation::Root { document: 0 },
             Some(frame) if frame.mapping => {
-                let key = frame.pending_key.take().unwrap_or_else(|| StructuredKey {
-                    text: String::new(),
-                    span: SourceSpan::default(),
-                    complex: false,
-                });
+                let key = frame
+                    .pending_key
+                    .take()
+                    .unwrap_or_else(|| StructuredKey::plain("", SourceSpan::default()));
                 NodeRelation::MappingEntry { key }
             }
             Some(frame) => {
@@ -393,13 +395,18 @@ impl<'a> Loader<'a> {
     /// part of the key text rather than dropped.
     fn set_scalar_key(&mut self, scalar: ScalarValue, anchor: usize, span: SourceSpan) {
         let mut text = scalar.text;
+        let mut prefix = 0;
         if let Some(name) = self.prelude.anchor(anchor) {
-            text = format!("&{name} {text}");
+            let anchor = format!("&{name} ");
+            prefix = anchor.len();
+            text = anchor + &text;
         }
         self.set_key(StructuredKey {
             text,
             span,
             complex: false,
+            style: scalar.style,
+            prefix,
         });
     }
 
@@ -414,6 +421,8 @@ impl<'a> Loader<'a> {
             text,
             span: SourceSpan::new(start, end),
             complex: true,
+            style: ScalarStyle::Plain,
+            prefix: 0,
         });
     }
 

@@ -30,13 +30,56 @@ impl PathSegment {
     /// (spec §20.4, AC-18). [`DocumentPath::canonical`] is deliberately not
     /// sanitised — it is the internal, copyable form and has to stay true to
     /// the source.
+    ///
+    /// A key that would read as something else in the breadcrumb — one that
+    /// contains a separator, looks like an index or a document marker, is
+    /// empty, or has spaces or line breaks a reader could not see — is quoted
+    /// and escaped, so `a › b` as one key and `a` then `b` as two cannot be
+    /// mistaken for each other (spec §5.3).
     pub fn label(&self) -> String {
         match self {
+            PathSegment::Key(key) if key_is_ambiguous(key) => {
+                crate::util::text::sanitize(&quote(key))
+            }
             PathSegment::Key(key) => crate::util::text::sanitize(key),
             PathSegment::Index(i) => format!("[{i}]"),
             PathSegment::Document(n) => format!("Document {n}"),
         }
     }
+}
+
+/// Whether a key shown bare in the breadcrumb could be read as something
+/// other than one key.
+fn key_is_ambiguous(key: &str) -> bool {
+    key.is_empty()
+        || key.starts_with(char::is_whitespace)
+        || key.ends_with(char::is_whitespace)
+        || key.contains(['\u{203a}', '>', '"'])
+        || key.starts_with('[')
+        || key.starts_with("Document ")
+        || key.starts_with('\u{2026}')
+        || key.starts_with("...")
+        || key.chars().any(|c| c.is_control())
+}
+
+/// A key as a JSON string literal: quoted, with quotes, backslashes and
+/// control characters escaped.
+fn quote(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 2);
+    out.push('"');
+    for c in key.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// The separator between breadcrumb segments.
@@ -212,10 +255,31 @@ mod tests {
             PathSegment::Key("x > y".into()),
         ]);
         assert_eq!(odd.canonical(), "/a~1b/c~0d/x > y");
-        // The breadcrumb is ambiguous for such a key; the canonical form is
-        // what disambiguates, which is why both exist.
-        assert_eq!(odd.breadcrumb(false), "a/b > c~d > x > y");
+        // The breadcrumb quotes a key that contains its separator.
+        assert_eq!(odd.breadcrumb(false), "a/b > c~d > \"x > y\"");
         assert_eq!(DocumentPath::default().canonical(), "/");
+    }
+
+    /// Spec §5.3: a key that contains a separator, looks like an index or a
+    /// document marker, or cannot be seen must not read as something else.
+    #[test]
+    fn the_breadcrumb_disambiguates_keys_that_read_as_something_else() {
+        let p = DocumentPath::new(vec![
+            PathSegment::Key("a.b".into()),
+            PathSegment::Key("x \u{203a} y".into()),
+            PathSegment::Index(0),
+            PathSegment::Key("[0]".into()),
+            PathSegment::Key(String::new()),
+            PathSegment::Key("Document 2".into()),
+            PathSegment::Key(" pad".into()),
+            PathSegment::Key("two\nlines".into()),
+            PathSegment::Key("say \"hi\"".into()),
+        ]);
+        assert_eq!(
+            p.breadcrumb(true),
+            "a.b \u{203a} \"x \u{203a} y\" \u{203a} [0] \u{203a} \"[0]\" \u{203a} \"\" \u{203a} \
+             \"Document 2\" \u{203a} \" pad\" \u{203a} \"two\\nlines\" \u{203a} \"say \\\"hi\\\"\""
+        );
     }
 
     #[test]

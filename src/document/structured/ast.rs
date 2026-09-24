@@ -77,6 +77,12 @@ pub struct StructuredKey {
     /// key); `text` is then the key's source form rather than a decoded
     /// scalar, because there is nothing simpler that stays truthful.
     pub complex: bool,
+    /// How the source wrote the key: a YAML key keeps the quotes it had
+    /// (D8). Every JSON key is [`ScalarStyle::DoubleQuoted`].
+    pub style: ScalarStyle,
+    /// Bytes at the start of `text` that are not the key itself but an anchor
+    /// written on it (`&name `), which stays outside any quotes.
+    pub prefix: usize,
 }
 
 impl StructuredKey {
@@ -86,7 +92,14 @@ impl StructuredKey {
             text: text.into(),
             span,
             complex: false,
+            style: ScalarStyle::Plain,
+            prefix: 0,
         }
+    }
+
+    /// The key proper, without an anchor written on it.
+    pub fn name(&self) -> &str {
+        self.text.get(self.prefix..).unwrap_or(&self.text)
     }
 }
 
@@ -659,7 +672,7 @@ impl StructuredDocument {
                     }
                 }
                 NodeRelation::MappingEntry { key } => {
-                    segments.push(PathSegment::Key(key.text.clone()));
+                    segments.push(PathSegment::Key(key.name().to_string()));
                 }
                 NodeRelation::SequenceItem { index } => {
                     segments.push(PathSegment::Index(*index));

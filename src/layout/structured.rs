@@ -337,12 +337,34 @@ impl<'a> Builder<'a> {
                 } else {
                     self.theme.structured.key
                 };
-                row.push_matched(
-                    &key.text,
-                    style,
-                    self.field_matches(node, MatchField::Label),
-                    0,
-                );
+                let matches = self.field_matches(node, MatchField::Label);
+                match key_quote(key, self.doc.kind() == DocumentKind::Json) {
+                    None => row.push_matched(&key.text, style, matches, 0),
+                    Some(quote) => {
+                        // An anchor written on the key stays outside the
+                        // quotes; the matches in the key proper move with the
+                        // escaping, exactly as a quoted value's do.
+                        let prefix = key.text.len() - key.name().len();
+                        row.push_matched(&key.text[..prefix], style, matches.clone(), 0);
+                        let inside = matches
+                            .into_iter()
+                            .filter(|m| m.end > prefix)
+                            .map(|m| Match {
+                                start: m.start.max(prefix) - prefix,
+                                end: m.end - prefix,
+                                ..m
+                            })
+                            .collect();
+                        let (escaped, moved) = if quote == "'" {
+                            escape_single_quoted(key.name(), inside)
+                        } else {
+                            escape_quoted(key.name(), inside)
+                        };
+                        row.push(quote, self.theme.structured.punctuation);
+                        row.push_matched(&escaped, style, moved, 0);
+                        row.push(quote, self.theme.structured.punctuation);
+                    }
+                }
                 row.push(":", self.theme.structured.punctuation);
                 row.push(" ", Style::new());
             }
@@ -809,6 +831,39 @@ fn escape_single_quoted(text: &str, matches: Vec<Match>) -> (String, Vec<Match>)
     (out, moved)
 }
 
+/// The quote a key is shown in, or `None` for a bare key.
+///
+/// A YAML key keeps the quotes its source gave it (D8). Otherwise a key is
+/// shown bare, which is what a reader expects of `metadata:` — unless bare it
+/// would read as something it is not: nothing at all, a key followed by a
+/// value, a sequence index, a YAML comment, anchor, alias or tag, or text whose
+/// spaces or line breaks cannot be seen. Then it is quoted and escaped the way
+/// a JSON string is (spec §5.1, §9.5).
+fn key_quote(key: &crate::document::structured::StructuredKey, json: bool) -> Option<&'static str> {
+    if key.complex {
+        return None;
+    }
+    if !json {
+        match key.style {
+            ScalarStyle::SingleQuoted => return Some("'"),
+            ScalarStyle::DoubleQuoted => return Some("\""),
+            _ => {}
+        }
+    }
+    let name = key.name();
+    let ambiguous = name.is_empty()
+        || name.starts_with(char::is_whitespace)
+        || name.ends_with(char::is_whitespace)
+        || name.ends_with(':')
+        || name.contains(": ")
+        || name.contains(" #")
+        || name.starts_with(['[', '#', '&', '*', '!', '\'', '"'])
+        || name == "-"
+        || name.starts_with("- ")
+        || name.chars().any(|c| c.is_control());
+    ambiguous.then_some("\"")
+}
+
 /// Whether a byte has to be written as an escape inside a quoted string.
 fn needs_escape(b: u8) -> bool {
     b == b'"' || b == b'\\' || b < 0x20 || b == 0x7f
@@ -1171,6 +1226,41 @@ mod tests {
             rows("t.yaml", src, None),
             ["script: |", "  echo hello", "  echo world", "after: 1"]
         );
+    }
+
+    /// A key is shown bare unless bare it would read as something else; a
+    /// YAML key keeps the quotes its source gave it (D8).
+    #[test]
+    fn keys_are_quoted_where_bare_they_would_mislead() {
+        let json = rows(
+            "t.json",
+            r#"{"a: b": "c", "": 1, "n\nl": 2, "[0]": 3, "plain": 4}"#,
+            None,
+        );
+        for row in [
+            r#""a: b": "c""#,
+            r#""": 1"#,
+            r#""n\nl": 2"#,
+            r#""[0]": 3"#,
+            "plain: 4",
+        ] {
+            assert!(json.iter().any(|r| r.trim() == row), "{row} in {json:?}");
+        }
+        let yaml = rows(
+            "t.yaml",
+            "\"a: b\": c\n'it''s': 1\n\"quoted\": 2\nplain: 3\n&anc key: 4\n*anc : 5\n",
+            None,
+        );
+        for row in [
+            r#""a: b": c"#,
+            "'it''s': 1",
+            r#""quoted": 2"#,
+            "plain: 3",
+            "&anc key: 4",
+            "*anc: 5",
+        ] {
+            assert!(yaml.iter().any(|r| r == row), "{row} in {yaml:?}");
+        }
     }
 
     #[test]

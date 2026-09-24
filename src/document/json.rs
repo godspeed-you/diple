@@ -32,7 +32,8 @@ use super::error::DocumentError;
 use super::format::DocumentKind;
 use super::source::{SourceDocument, SourceSpan};
 use super::structured::ast::{
-    NodeRelation, ScalarKind, ScalarValue, StructuredDocument, StructuredKey, MAX_DEPTH,
+    NodeRelation, ScalarKind, ScalarStyle, ScalarValue, StructuredDocument, StructuredKey,
+    MAX_DEPTH,
 };
 use super::structured::Builder;
 
@@ -263,6 +264,8 @@ impl<'a> Parser<'a> {
                 text,
                 span,
                 complex: false,
+                style: ScalarStyle::DoubleQuoted,
+                prefix: 0,
             },
         })
     }

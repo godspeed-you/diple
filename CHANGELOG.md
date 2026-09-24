@@ -126,6 +126,14 @@ every key, every setting and every behaviour it had in 1.2.
   on a container's own key no longer opens that container either: its key row
   is visible while it is collapsed, so only its ancestors open.
 
+- **A key that would read as something else is quoted**, in the document and
+  in the path alike. `{"a: b": "c"}` showed `a: b: "c"`, an empty key showed
+  as nothing, a line break in a key became an invisible space, and the path
+  `a.b › x › y › [0]` could not say whether `x › y` was one key or two, or
+  whether `[0]` was an index or a key. Such keys are now shown quoted and
+  escaped — `"a: b": "c"`, `"x › y"`, `"[0]"` — while `metadata:` stays as it
+  is. A YAML key keeps the quotes its source gave it.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the
