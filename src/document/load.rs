@@ -384,6 +384,30 @@ mod tests {
         assert!(load(FormatRequest::Auto, SourceDocument::new("<stdin>", &yaml)).is_ok());
     }
 
+    /// The probe settles a large input on its first 64 KiB: a Markdown list
+    /// far past it stays Markdown, and a large YAML stream is still read in
+    /// full once its start is confidently YAML.
+    #[test]
+    fn the_probe_decides_a_large_input_on_its_start() {
+        let mut list = String::new();
+        while list.len() < 4 * PROBE_BYTES {
+            list.push_str("- Item: a note with a colon in it\n");
+        }
+        let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &list)).unwrap();
+        assert_eq!(d.format, DocumentKind::Markdown);
+
+        let mut yaml = String::from("items:\n");
+        while yaml.len() < 4 * PROBE_BYTES {
+            yaml.push_str("  - name: web\n    image: nginx\n");
+        }
+        let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &yaml)).unwrap();
+        assert_eq!(d.format, DocumentKind::Yaml);
+        assert!(
+            d.model.node_count() > 10_000,
+            "read to the end, not just the probe"
+        );
+    }
+
     /// Spec §17.2: input that had already read a member name or a comma is a
     /// broken JSON document, not Markdown — and neither is a thousand
     /// opening brackets.

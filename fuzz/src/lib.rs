@@ -493,6 +493,19 @@ pub fn format_detect(data: &[u8]) {
         "the JSON container test must be a pure function of the text"
     );
 
+    // Detection reads a large input in two steps — a probe of its first
+    // 64 KiB, then all of it — and the smoke runner keeps inputs under that
+    // size. For a quarter of the inputs, repeat the text past the probe's
+    // edge, shifted by a few bytes, so that every byte of it, multi-byte
+    // characters included, eventually lands on the edge.
+    if control & 0xc0 == 0xc0 && !text.is_empty() {
+        let mut big = "x".repeat(usize::from(control & 7));
+        while big.len() <= 64 * 1024 {
+            big.push_str(text);
+        }
+        let _ = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &big));
+    }
+
     let first = load(request, SourceDocument::new(name, text));
     let second = load(request, SourceDocument::new(name, text));
     match (&first, &second) {
