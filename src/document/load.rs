@@ -139,7 +139,12 @@ fn probably_yaml(source: &SourceDocument) -> bool {
     if text.len() <= PROBE_BYTES {
         return true;
     }
-    let Some(cut) = text[..PROBE_BYTES].rfind('\n') else {
+    // Searched as bytes: `PROBE_BYTES` may fall inside a multi-byte
+    // character, and a `\n` byte is always a character boundary of its own.
+    let Some(cut) = text.as_bytes()[..PROBE_BYTES]
+        .iter()
+        .rposition(|&b| b == b'\n')
+    else {
         return true;
     };
     let prefix = SourceDocument::new(source.name(), &text[..cut + 1]);
@@ -345,6 +350,26 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));
             assert_eq!(d.format, DocumentKind::Markdown, "{text:?}");
         }
+    }
+
+    /// Regression: the probe sliced the text at a byte count, which panicked
+    /// when a multi-byte character straddled it.
+    #[test]
+    fn a_large_input_with_a_multibyte_character_at_the_probe_edge_opens() {
+        for pad in 0..4 {
+            let mut text = "x".repeat(PROBE_BYTES - 2 + pad);
+            while text.len() < PROBE_BYTES + 100 {
+                text.push_str("Grüße 日本語 ");
+            }
+            text.push('\n');
+            let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &text)).unwrap();
+            assert_eq!(d.format, DocumentKind::Markdown);
+        }
+        let mut yaml = String::from("a:\n  b: 1\n");
+        while yaml.len() < PROBE_BYTES + 100 {
+            yaml.push_str("  k: \"日本語\"\n");
+        }
+        assert!(load(FormatRequest::Auto, SourceDocument::new("<stdin>", &yaml)).is_ok());
     }
 
     /// Spec §17.2: input that had already read a member name or a comma is a
