@@ -152,6 +152,11 @@ every key, every setting and every behaviour it had in 1.2.
   `YAML parse error at bad.yaml:2:8: unclosed quote` — instead of squashing
   the multi-line report, excerpt and all, onto the status line.
 
+- **A JSON document opens at its first row.** The screen was anchored on
+  the cursor's node, the root's first entry, so the root's own `{` or `[` —
+  and a multi-document stream's `--- Document 1` — started scrolled out of
+  sight.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

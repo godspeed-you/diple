@@ -249,7 +249,13 @@ impl App {
         let hints = HintsState {
             open: config.key_hints,
         };
-        let anchor = (doc.first_semantic().unwrap_or(0), 0);
+        // The screen starts at the top of the document — a JSON root's brace,
+        // a `--- Document 1` row — and the cursor on the first node worth
+        // being on, which for a structured document is the root's first
+        // entry. Anchoring the viewport on the cursor scrolled the first row
+        // out of sight before the reader had pressed a key.
+        let anchor = (0, 0);
+        let cursor = doc.first_semantic().unwrap_or(0);
         let mut app = App {
             doc,
             folds,
@@ -272,7 +278,7 @@ impl App {
             size: opts.size,
             width_override: opts.width_override,
             anchor,
-            cursor: anchor.0,
+            cursor,
             top_line: 0,
             h_offset: 0,
             painted: None,

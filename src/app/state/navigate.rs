@@ -633,6 +633,16 @@ mod tests {
         assert!(!a.doc.is_hidden(m.node, &a.folds));
     }
 
+    /// The first screen of a JSON document starts at its root brace, with
+    /// the cursor on the first entry below it.
+    #[test]
+    fn a_json_document_opens_at_its_root_row() {
+        let a = crate::testing::json_app(r#"[{"id": 1}, {"id": 2}]"#);
+        assert_eq!(a.top_line(), 0);
+        assert_eq!(a.tree().lines[0].node, 0, "the root's `[` is on screen");
+        assert_eq!(a.cursor_node(), a.doc.first_semantic());
+    }
+
     fn type_search(a: &mut App, query: &str) {
         key(a, '/');
         for c in query.chars() {
