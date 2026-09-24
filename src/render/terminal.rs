@@ -195,19 +195,25 @@ impl StatusBar<'_> {
     /// truncated with an ellipsis — filename, format and progress are what a
     /// reader orients by.
     pub(crate) fn text(&self, width: usize) -> String {
-        let right = format!("{}%  {}/{}", self.percent, self.line, self.total);
-        let mut left = format!("{}  {}", self.filename, self.format);
-        if let Some(m) = self.message {
-            if !m.is_empty() {
-                left = format!("{left}  {m}");
-            }
-        }
-        let lw = unicode::width(&left);
-        let rw = unicode::width(&right);
-
         // A breadcrumb needs room to say anything at all; below that the two
         // spaces of separation are worth more than a lone ellipsis.
         const MIN_PATH: usize = 8;
+        let right = format!("{}%  {}/{}", self.percent, self.line, self.total);
+        let mut left = format!("{}  {}", self.filename, self.format);
+        let rw = unicode::width(&right);
+        if let Some(m) = self.message.filter(|m| !m.is_empty()) {
+            // §24.3 ranks the name, the format, the progress and the current
+            // node above anything else; a message that would leave the path
+            // no room gives way to it.
+            let with = format!("{left}  {m}");
+            let path_squeezed = self.path.is_some()
+                && unicode::width(&with) + rw + MIN_PATH + 4 > width
+                && unicode::width(&left) + rw + MIN_PATH + 4 <= width;
+            if !path_squeezed {
+                left = with;
+            }
+        }
+        let lw = unicode::width(&left);
         let gap = width.saturating_sub(lw + rw);
         let crumb = self.path.and_then(|path| {
             let room = if gap >= MIN_PATH + 4 {
@@ -987,6 +993,25 @@ mod tests {
         assert_eq!(unicode::width(&text), 40);
         // Narrow terminals truncate instead of panicking.
         assert!(unicode::width(&bar.text(10)) <= 10);
+    }
+
+    /// §24.3: on a narrow line the current node outranks a message.
+    #[test]
+    fn a_narrow_status_line_keeps_the_path_over_a_message() {
+        let theme = Theme::dark();
+        let path = DocumentPath::new(vec![
+            PathSegment::Key("spec".into()),
+            PathSegment::Key("replicas".into()),
+        ]);
+        let mut bar = status_bar(&theme);
+        bar.filename = "k8s.yaml";
+        bar.format = "YAML";
+        bar.path = Some(&path);
+        bar.message = Some("match 3 of 12 for replicas");
+        let text = bar.text(50);
+        assert!(text.contains("replicas  "), "{text:?}");
+        assert!(!text.contains("match 3"), "{text:?}");
+        assert!(bar.text(100).contains("match 3 of 12"), "room for both");
     }
 
     /// With a message showing on a tight line, the counters 1.x always

@@ -617,7 +617,10 @@ impl<'a> Loader<'a> {
             ErrorKind::UnclosedQuotedScalar | ErrorKind::UnclosedFlowCollection { .. } => {
                 report.ran_out()
             }
-            ErrorKind::InvalidQuotedScalarIndent if at_the_end => report.ran_out(),
+            // Anything else that breaks exactly where the input ends — an
+            // escape, an alias or an item left without its rest — ran out
+            // as well; detection still asks what came before.
+            _ if at_the_end => report.ran_out(),
             _ => report,
         }
     }
@@ -832,11 +835,29 @@ fn alias_name_from_source(text: &str, span: SourceSpan) -> String {
 /// the cost of a false negative is typing `--format yaml`. The policy is tuned
 /// accordingly.
 pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
-    if doc.roots().is_empty() {
+    // An empty document — a trailing `---`, or `---` twice — says nothing
+    // either way, and a stream of nothing else is not YAML anyone piped in.
+    let documents: Vec<NodeId> = doc
+        .roots()
+        .iter()
+        .map(|root| root.node)
+        .filter(|&root| {
+            // An empty document reads as a null whose source is empty — but
+            // only one with nothing at all in its part of the stream is empty:
+            // front matter over a lone `# Heading` is two documents, the
+            // second a comment, and that second one is Markdown.
+            doc.node(root).is_some_and(|n| {
+                let null = matches!(&n.kind, StructuredNodeKind::Scalar(v)
+                    if v.source.as_deref().is_some_and(|s| s.trim().is_empty()));
+                !(null && document_text_is_blank(doc, root))
+            })
+        })
+        .collect();
+    if documents.is_empty() {
         return false;
     }
-    let coherent = doc.roots().iter().all(|root| {
-        doc.node(root.node)
+    let coherent = documents.iter().all(|&root| {
+        doc.node(root)
             .is_some_and(|n| n.is_container() && n.child_count > 0)
     });
     if !coherent {
@@ -850,7 +871,9 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
     // (`---` is also a Markdown rule, and front matter is a document) and a
     // flat top-level mapping (`Status: done` over `Owner: alice` is a note).
     // Both were tried, and both claimed ordinary Markdown; a flat YAML file
-    // piped in needs `--format yaml`.
+    // piped in needs `--format yaml`. For the same reason every document of a
+    // stream has to show a signal of its own: front matter with a nested
+    // `params:` over a Markdown list is two documents, one of them a list.
     let aliased: std::collections::HashSet<&str> = doc
         .nodes()
         .iter()
@@ -859,7 +882,42 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
             _ => None,
         })
         .collect();
-    doc.nodes().iter().any(|node| {
+    documents.iter().all(|&root| {
+        let end = doc.node(root).map_or(root, |n| n.end);
+        document_has_signal(doc, &doc.nodes()[root..end], &aliased)
+    })
+}
+
+/// Whether the part of the stream an (empty) document occupies — from its
+/// root to the next document's root — holds nothing but blank lines and
+/// document markers.
+fn document_text_is_blank(doc: &StructuredDocument, root: NodeId) -> bool {
+    let text = doc.source().text();
+    let start = doc.node(root).map_or(0, |n| n.span.start).min(text.len());
+    let end = doc
+        .roots()
+        .iter()
+        .map(|r| r.node)
+        .find(|&r| r > root)
+        .and_then(|r| doc.node(r))
+        .map_or(text.len(), |n| n.span.start)
+        .clamp(start, text.len());
+    // The null's own span may begin just before its marker line; look at
+    // whole lines from there.
+    let from = text[..start].rfind('\n').map_or(0, |at| at + 1);
+    text[from..end].lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line == "---" || line == "..."
+    })
+}
+
+/// Whether one document's nodes show structure prose does not write.
+fn document_has_signal(
+    doc: &StructuredDocument,
+    nodes: &[super::structured::StructuredNode],
+    aliased: &std::collections::HashSet<&str>,
+) -> bool {
+    nodes.iter().any(|node| {
         // An anchor some alias refers to. An anchor alone is `- &copy; 2024`,
         // an HTML entity at the start of a list item.
         if node.anchor().is_some_and(|a| aliased.contains(a)) {
@@ -905,22 +963,44 @@ fn not_all_phrases(doc: &StructuredDocument, mapping: NodeId) -> bool {
             None => true,
             Some(v) => {
                 let text = v.text.trim();
-                !(v.style == ScalarStyle::Plain
-                    && v.kind == ScalarKind::String
-                    && (text.contains(char::is_whitespace)
-                        || text.ends_with(['.', '!', '?', '\u{2026}'])))
+                !(v.style == ScalarStyle::Plain && v.kind == ScalarKind::String && is_phrase(text))
             }
         })
     })
 }
 
+/// Whether a plain value reads as words rather than as a token: it has a
+/// space in it, it ends like a sentence in any common script, or it is
+/// written in a script that does not put spaces between words, where the
+/// absence of one says nothing.
+fn is_phrase(text: &str) -> bool {
+    const SENTENCE_ENDS: [char; 14] = [
+        '.', '!', '?', '\u{2026}', // Latin
+        '\u{3002}', '\u{ff01}', '\u{ff1f}', '\u{ff0e}', // CJK 。！？．
+        '\u{589}',  // Armenian ։
+        '\u{61f}', '\u{6d4}', // Arabic ؟ ۔
+        '\u{964}', '\u{965}',  // Devanagari । ॥
+        '\u{1362}', // Ethiopic ።
+    ];
+    text.contains(char::is_whitespace)
+        || text.ends_with(SENTENCE_ENDS)
+        || text.chars().any(|c| {
+            matches!(c,
+                '\u{3040}'..='\u{30ff}'   // Hiragana, Katakana
+                | '\u{3400}'..='\u{4dbf}' // CJK extension A
+                | '\u{4e00}'..='\u{9fff}' // CJK unified ideographs
+                | '\u{0e00}'..='\u{0e7f}') // Thai
+        })
+}
+
 /// Whether a mapping's own keys, and every key on the way down to it, are
 /// free of spaces — the keys configuration uses, not the ones prose makes.
+/// Quoted or not: spec §6.5 says no key.
 fn keys_are_identifiers(doc: &StructuredDocument, mapping: NodeId) -> bool {
     let plain_phrase = |id: NodeId| {
-        doc.node(id).and_then(|n| n.key()).is_some_and(|k| {
-            !k.complex && k.style == ScalarStyle::Plain && k.name().contains(char::is_whitespace)
-        })
+        doc.node(id)
+            .and_then(|n| n.key())
+            .is_some_and(|k| !k.complex && k.name().contains(char::is_whitespace))
     };
     if doc.children(mapping).into_iter().any(plain_phrase) {
         return false;

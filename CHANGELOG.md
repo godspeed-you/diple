@@ -162,7 +162,8 @@ every key, every setting and every behaviour it had in 1.2.
     breaks after an object's first member name (`{"broken": }`);
   - YAML that a stream detection would claim runs into, and that the input
     leaves inside an unclosed quote or bracket — including a multi-line quoted
-    value cut at a line break by `head -n`.
+    value of any length cut at a line break by `head -n`. The error points at
+    the quote or bracket that was never closed.
   Prose that merely fails to parse as either still opens as Markdown.
 
 - **YAML tags and quoted values read back as the source wrote them.** A
@@ -198,7 +199,8 @@ every key, every setting and every behaviour it had in 1.2.
   `%YAML` directive; an anchor an alias uses; a `!!` tag. A flat mapping
   (`Status: done` over `Owner: alice`), a stream split by `---` (lists
   separated by a rule, front matter over a list), an HTML entity at the start
-  of a list item (`- &copy; 2024`), a wrapped list item with two colons, and an
+  of a list item (`- &copy; 2024`), a wrapped list item with two colons,
+  sentences in any script, front matter over a Markdown body, and an
   indented code block of configuration are no longer taken as YAML; a flat
   YAML file piped in needs `--format yaml`. `kubectl … -o
   yaml`, Compose files, GitHub Actions, Ansible playbooks and Helm output are

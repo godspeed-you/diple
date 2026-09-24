@@ -625,7 +625,11 @@ A strong signal is structure that prose and Markdown do not produce. Strong sign
 - a `%YAML` or `%TAG` directive;
 - an anchor that an alias refers to;
 - a `!!` core tag, a verbatim `!<…>` tag, or any tag on a mapping or sequence;
-- a mapping nested under a mapping key, or a mapping of two or more entries inside a sequence or mapping — where no key on the way down contains a space, and not every value is a phrase (plain text containing a space, or ending like a sentence).
+- a mapping nested under a mapping key, or a mapping of two or more entries inside a sequence or mapping — where no key on the way down contains a space, and not every value is a phrase (plain text containing a space, ending like a sentence in any common script, or written in a script that does not space its words).
+
+In a stream of several documents, every document must show a strong signal of its own; a document that is empty (nothing but blank lines and markers, as a trailing `---` leaves) is ignored, while a document holding only comments counts, because front matter over a Markdown heading is exactly that.
+
+Short nested key–value notes (`Environment:` over `  OS: Linux`) and a Markdown file that consists of nothing but nested front matter are YAML by these rules, and are detected as YAML: they are YAML, and no rule can tell them from a small configuration.
 
 The following are valid YAML structure but are **not** strong signals, because ordinary Markdown produces them:
 
@@ -638,7 +642,7 @@ The following are valid YAML structure but are **not** strong signals, because o
 
 Input whose first content line is indented, or in which a line after a blank line is indented four or more columns deeper than the line before it (a Markdown indented code block), is not auto-detected as YAML.
 
-Input larger than 64 KiB is decided on its first 64 KiB, so that a large Markdown file on stdin is not parsed as YAML to the end; a stream whose first strong signal appears only after that point is not detected.
+Input larger than 64 KiB is first probed on its first 64 KiB, so that a large Markdown file on stdin is not parsed as YAML to the end: when that prefix parses and shows no strong signal, the input is Markdown, even if a signal appears later. When the prefix does not parse (the cut fell inside a construct), the whole input is examined.
 
 *Revised 2026-09-24:* the first 2.0 draft listed "at least two mapping entries", "mapping containing a sequence", "nested sequence containing mappings" (without requiring more than one entry per mapping), an explicit `---` marker and "multiple YAML documents" as strong signals. Three independent audits showed each of them claiming ordinary Markdown on stdin, which AC-06 forbids; they were narrowed or withdrawn in favour of AC-06. A fourth audit narrowed anchors, tags and nested mappings further, for the same reason.
 
@@ -675,7 +679,7 @@ The detected format shall be visible in the status line or document metadata are
 
 If auto-detection chooses YAML for stdin and parsing later fails due to incomplete streaming input, the user must receive a useful error rather than silent fallback after partial interpretation.
 
-Detection can only recognise incomplete input where the parser can: a JSON value, string, keyword or container left open at the end of the input, a JSON object that fails after its first member name, and a YAML quoted scalar or flow collection left open — including a multi-line quoted scalar cut at a line break, as `head -n` leaves it — after lines that are themselves confidently YAML (§6.5). YAML cut at a point where the remainder still parses — or fails in a way prose also fails, such as a key without its colon on the last line — cannot be told apart from Markdown and falls back; `--format yaml` or a `.yaml` name makes such input an error. (*Revised 2026-09-24*, after a broader rule refused ordinary notes with exit 1.)
+Detection can only recognise incomplete input where the parser can: a JSON value, string, keyword or container left open at the end of the input, a JSON object that fails after its first member name, and a YAML quoted scalar or flow collection left open — including a multi-line quoted scalar cut at a line break, as `head -n` leaves it, however long — after lines that are themselves confidently YAML (§6.5). The error points at the quote or bracket that was left open. YAML cut at a point where the remainder still parses — or fails in a way prose also fails, such as a key without its colon on the last line — cannot be told apart from Markdown and falls back; `--format yaml` or a `.yaml` name makes such input an error. (*Revised 2026-09-24*, after a broader rule refused ordinary notes with exit 1.)
 
 diple reads stdin to completion before semantic parsing; it is not a live streaming YAML parser in 2.0.
 

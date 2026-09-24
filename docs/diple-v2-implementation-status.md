@@ -225,8 +225,14 @@ deeper after a blank line), and one of these is present:
 - an anchor that an alias refers to;
 - a `!!` or verbatim `!<…>` tag, or any tag on a collection;
 - a mapping under a mapping key, or a mapping of two or more entries inside a
-  container — where no key on the way down contains a space and not every
-  value is a phrase.
+  container — where no key on the way down contains a space (quoted or not)
+  and not every value is a phrase (with a space, a sentence ending in any
+  common script, or in a script without word spacing).
+
+In a stream, every non-empty document needs its own signal (front matter
+with nesting over a Markdown list is two documents, one a list); a document
+with nothing but blank lines and markers is ignored, one with comments is
+not. The indented-code-block veto skips lines inside block scalars.
 
 Not signals, each withdrawn after it claimed ordinary Markdown: several
 documents or a `---` marker, a flat top-level mapping, a lone anchor (`- &copy;`
@@ -235,9 +241,12 @@ of phrases (a wrapped list item, an introduction over indented text). History:
 the second audit removed "a container inside a container", the third the flat
 mapping and multiple documents, the fourth the rest of that list.
 
-Input over 64 KiB is decided on its first 64 KiB (`probably_yaml`): a stream
-whose nesting first appears later stays Markdown, a documented limit of the
-probe that keeps a large Markdown file on stdin from being parsed as YAML.
+Input over 64 KiB is probed on its first 64 KiB (`probably_yaml`): a prefix
+that parses without a signal settles it as Markdown, a documented limit that
+keeps a large Markdown file on stdin from being parsed as YAML; a prefix that
+does not parse earns the full parse. Truncation (`yaml_cut_short`) finds the
+last line that opens a quote or bracket and leaves it open by scanning, and
+parses only what precedes it once — no length limit, one parse.
 
 ### D12 — a *stated* format that fails to parse is an error; a *guess* falls back
 

@@ -106,19 +106,23 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
             Err(_) => {}
         }
     }
-    if !starts_indented(source.text())
-        && !has_indented_code_block(source.text())
-        && probably_yaml(&source)
-    {
+    if !starts_indented(source.text()) && probably_yaml(&source) {
         match yaml::parse(&source) {
-            Ok(document) if yaml::is_confidently_yaml(&document) => {
+            Ok(document)
+                if yaml::is_confidently_yaml(&document)
+                    && !has_indented_code_block(source.text(), &document) =>
+            {
                 return Ok(LoadedDocument {
                     format: DocumentKind::Yaml,
                     detected: true,
                     model: DocumentModel::structured(document),
                 });
             }
-            Err(error) if yaml_cut_short(&source, &error) => return Err(truncated(error)),
+            Err(error) => {
+                if let Some(cut) = yaml_cut_short(&source, &error) {
+                    return Err(truncated(cut));
+                }
+            }
             _ => {}
         }
     }
@@ -146,18 +150,33 @@ fn starts_indented(text: &str) -> bool {
 /// Whether a line after a blank line is indented four or more columns deeper
 /// than the line before the blank — a Markdown indented code block
 /// (`Example config:` over an indented example). YAML nests two or so
-/// columns at a time and does not open a level after a blank line.
-fn has_indented_code_block(text: &str) -> bool {
+/// columns at a time and does not open a level after a blank line — except
+/// inside a block scalar (`nginx.conf: |`), whose content is free text, so
+/// lines inside one of `document`'s block scalars do not count.
+fn has_indented_code_block(
+    text: &str,
+    document: &crate::document::structured::StructuredDocument,
+) -> bool {
     let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let blocks: Vec<(usize, usize)> = document
+        .nodes()
+        .iter()
+        .filter(|n| n.scalar().is_some_and(|v| v.style.is_block()))
+        .map(|n| (n.span.start, n.span.end))
+        .collect();
+    let in_block = |at: usize| blocks.iter().any(|&(start, end)| start <= at && at < end);
     let mut previous: Option<usize> = None;
     let mut blank = false;
-    for line in text.lines() {
+    let mut at = 0usize;
+    for line in text.split_inclusive('\n') {
+        let here_at = at;
+        at += line.len();
         if line.trim().is_empty() {
             blank = true;
             continue;
         }
         let here = indent(line);
-        if blank && previous.is_some_and(|p| here >= p + 4) {
+        if blank && previous.is_some_and(|p| here >= p + 4) && !in_block(here_at) {
             return true;
         }
         previous = Some(here);
@@ -200,39 +219,112 @@ fn probably_yaml(source: &SourceDocument) -> bool {
 /// quote), which is why what came before has to be confidently YAML; an open
 /// flow collection needs only a mapping or sequence before it, because prose
 /// does not write `b: [1, 2`.
-fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> bool {
+fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> Option<DocumentError> {
     // Only a construct the parser saw left open. A break on the last line
     // was tried as a signal too, and refused ordinary notes — `Name: Alice`
     // over `Role: Admin` over a closing `Thanks!` — with exit 1; and so did
     // accepting an open bracket after any mapping (`Status: draft` over
     // `[TODO: fill in`). What comes before has to be confidently YAML.
     if !error.incomplete {
-        return false;
+        return None;
     }
-    let Some(position) = error.position else {
-        return false;
-    };
-    // The parser may point past the construct it could not finish (a quoted
-    // scalar cut at a line break is reported where the input ends), so walk
-    // back from its line to the last one that starts a parseable prefix.
+    let (line, column, what) = open_construct(source.text())?;
     let text = source.text();
-    let starts: Vec<usize> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
-    let line = position.line.min(starts.len());
-    (1..line)
-        .rev()
-        .take(TRUNCATED_LINES)
-        .map(|l| starts[l])
-        .filter(|&end| end > 0)
-        .find_map(|end| yaml::parse(&SourceDocument::new(source.name(), &text[..end])).ok())
-        .is_some_and(|doc| yaml::is_confidently_yaml(&doc))
+    let start = text
+        .match_indices('\n')
+        .nth(line.checked_sub(2)?)
+        .map(|(at, _)| at + 1)?;
+    let prefix = yaml::parse(&SourceDocument::new(source.name(), &text[..start])).ok()?;
+    if !yaml::is_confidently_yaml(&prefix) {
+        return None;
+    }
+    // Point at the quote or bracket that was never closed, not wherever the
+    // parser gave up — for a quoted value cut at a line break that is a line
+    // past the end of the input, with nothing to put a caret under.
+    Some(DocumentError::at_line_col(
+        source,
+        DocumentKind::Yaml,
+        line,
+        column,
+        format!("{what} opened here is never closed"),
+    ))
 }
 
-/// How far back from a failure [`yaml_cut_short`] looks for the start of the
-/// construct that was left open: a quoted scalar or flow collection longer
-/// than this is not a cut the reader will recognise anyway.
-const TRUNCATED_LINES: usize = 16;
+/// The last quote or bracket that opens a value and is still open at the end
+/// of its line — the construct a cut-off YAML stream was in the middle of —
+/// as a 1-based line, a 1-based column, and what it is.
+///
+/// A value opens where a line's content starts, after `- `, or after `: `.
+/// Found by scanning, not by re-parsing ever shorter prefixes: one parse of
+/// what precedes it is all [`yaml_cut_short`] needs, however long the quoted
+/// value is.
+fn open_construct(text: &str) -> Option<(usize, usize, &'static str)> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (index, line) in lines.iter().enumerate().rev() {
+        if let Some((column, what)) = opens_and_stays_open(line) {
+            return Some((index + 1, column, what));
+        }
+    }
+    None
+}
+
+/// Where on `line` a value opens with a quote or bracket that the line does
+/// not close, if one does.
+fn opens_and_stays_open(line: &str) -> Option<(usize, &'static str)> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = chars.iter().take_while(|c| **c == ' ').count();
+    while chars.get(i) == Some(&'-') && chars.get(i + 1) == Some(&' ') {
+        i += 2;
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+    }
+    // Candidate value starts: the content start, and after every `: `.
+    let mut starts = vec![i];
+    for k in i..chars.len().saturating_sub(1) {
+        if chars[k] == ':' && chars[k + 1] == ' ' {
+            let mut v = k + 1;
+            while chars.get(v) == Some(&' ') {
+                v += 1;
+            }
+            starts.push(v);
+        }
+    }
+    for &at in starts.iter().rev() {
+        let open = match chars.get(at) {
+            Some('"') => {
+                let mut escaped = false;
+                !chars[at + 1..].iter().any(|&c| {
+                    let close = c == '"' && !escaped;
+                    escaped = c == '\\' && !escaped;
+                    close
+                })
+            }
+            Some('\'') => chars[at + 1..].iter().filter(|&&c| c == '\'').count() % 2 == 0,
+            Some('[' | '{') => {
+                let mut depth = 0i32;
+                for &c in &chars[at..] {
+                    match c {
+                        '[' | '{' => depth += 1,
+                        ']' | '}' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                depth > 0
+            }
+            _ => false,
+        };
+        if open {
+            let what = if matches!(chars[at], '[' | '{') {
+                "the bracket"
+            } else {
+                "the quote"
+            };
+            return Some((at + 1, what));
+        }
+    }
+    None
+}
 
 /// A parse error in input that is clearly that format, with the reason
 /// diple did not fall back to Markdown.
@@ -393,6 +485,15 @@ mod tests {
             "- !important: read this\n- then that\n",
             "- Fix: the cache is cleared on restart. See also the\n  release notes: they explain it.\n",
             "- Stack-Footprint: Keycloak, NATS, Postgres gleichzeitig\n  Gegenmassnahme: vorbefuelltes Compose-Profil.\n",
+            // Sentences in scripts that end them differently, or do not
+            // space their words.
+            "- 说明: 这是一个测试。\n  备注: 请忽略。\n",
+            "- 説明: これはテストです\n  備考: 無視してください\n",
+            // Front matter with nesting over a Markdown list: two documents,
+            // only one of them with a signal.
+            "---\ntitle: Post\nparams:\n  toc: true\n---\n\n## Checklist\n\n- one\n- two\n",
+            // A quoted key with a space in it is still a phrase.
+            "\"Next steps\":\n  first: write tests\n  then: ship it\n",
         ] {
             let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text))
                 .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));
@@ -442,6 +543,35 @@ mod tests {
             d.model.node_count() > 10_000,
             "read to the end, not just the probe"
         );
+    }
+
+    #[test]
+    fn yaml_that_markdown_rules_would_have_hidden_is_still_yaml() {
+        for text in [
+            // A trailing `---` is an empty document, not a reason to doubt.
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: web\n---\n",
+            // A blank line and deeper indentation inside a block scalar is
+            // its content, not a Markdown code block.
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nginx\ndata:\n  nginx.conf: |\n    server {\n\n        location / {}\n    }\n",
+        ] {
+            let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).unwrap();
+            assert_eq!(d.format, DocumentKind::Yaml, "{text:?}");
+        }
+    }
+
+    /// A quoted value cut by `head -n` however long it is, reported where the
+    /// quote opened rather than past the end of the input.
+    #[test]
+    fn a_long_quoted_value_cut_at_a_line_break_points_at_its_quote() {
+        let mut text = String::from("metadata:\n  name: web\n  note: \"first");
+        for n in 0..40 {
+            text.push_str(&format!("\n    continued {n}"));
+        }
+        text.push('\n');
+        let error = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &text))
+            .expect_err("cut inside the quote");
+        assert_eq!(error.position.map(|p| (p.line, p.column)), Some((3, 9)));
+        assert!(error.report().contains('^'), "{}", error.report());
     }
 
     /// Spec §17.2: input that had already read a member name or a comma is a
