@@ -29,12 +29,14 @@ const EXIT_FAILURE: u8 = 1;
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
+        // Sanitised: a message can carry a file name, and a file name can
+        // carry an escape sequence.
         Err(Failure::Usage(message)) => {
-            eprintln!("diple: {message}");
+            eprintln!("diple: {}", diple::util::text::sanitize(&message));
             ExitCode::from(EXIT_USAGE)
         }
         Err(Failure::Runtime(message)) => {
-            eprintln!("diple: {message}");
+            eprintln!("diple: {}", diple::util::text::sanitize(&message));
             ExitCode::from(EXIT_FAILURE)
         }
         // The report is several lines of quoted source, so it is printed as
@@ -258,7 +260,10 @@ fn decode(bytes: Vec<u8>, name: &str) -> String {
     match String::from_utf8(bytes) {
         Ok(text) => text,
         Err(error) => {
-            eprintln!("diple: {name}: invalid UTF-8, decoding lossily");
+            eprintln!(
+                "diple: {}: invalid UTF-8, decoding lossily",
+                diple::util::text::sanitize(name)
+            );
             String::from_utf8_lossy(error.as_bytes()).into_owned()
         }
     }

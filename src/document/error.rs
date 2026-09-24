@@ -144,9 +144,12 @@ impl DocumentError {
         out.push_str(&format!("{} parse error\n", self.format.label()));
         match self.position {
             Some(Position { line, column }) => {
-                out.push_str(&format!("{}:{line}:{column}\n", self.source_name));
+                out.push_str(&format!(
+                    "{}:{line}:{column}\n",
+                    sanitize(&self.source_name)
+                ));
             }
-            None => out.push_str(&format!("{}\n", self.source_name)),
+            None => out.push_str(&format!("{}\n", sanitize(&self.source_name))),
         }
         if !self.excerpt.is_empty() {
             out.push('\n');
@@ -174,7 +177,9 @@ impl DocumentError {
             }
             out.push('\n');
         }
-        out.push_str(&self.message);
+        // The message can quote the source too (a JSON error names the
+        // character it found).
+        out.push_str(&sanitize(&self.message));
         out
     }
 }

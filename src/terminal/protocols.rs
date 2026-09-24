@@ -86,9 +86,12 @@ pub(crate) fn osc8_link(url: &str, text: &str) -> String {
     format!("{}{}{}", osc8_start(url), text, osc8_end())
 }
 
+/// Drop what must not reach the terminal inside an OSC 8 target: controls,
+/// which could end the sequence, and bidirectional overrides, which could make
+/// the target a terminal shows on hover read as a different address.
 fn sanitize_url(url: &str) -> String {
     url.chars()
-        .filter(|c| !c.is_control() && *c != ';')
+        .filter(|&c| crate::util::text::replacement(c).is_none() && c != ';')
         .collect()
 }
 
@@ -508,6 +511,14 @@ mod tests {
     }
 
     // -- OSC 8 ------------------------------------------------------------
+
+    #[test]
+    fn a_link_target_cannot_carry_controls_or_bidi_overrides() {
+        let start = osc8_start("https://example.com/\u{202e}gpj.exe\u{1b}\\;x");
+        assert!(!start.contains('\u{202e}'), "{start:?}");
+        // The introducer and the terminator are the only escapes.
+        assert_eq!(start.matches('\u{1b}').count(), 2, "{start:?}");
+    }
 
     #[test]
     fn osc8_roundtrip() {
