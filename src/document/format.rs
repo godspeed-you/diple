@@ -39,6 +39,17 @@ impl DocumentKind {
         }
     }
 
+    /// What a fold folds, singular and plural: a Markdown reader folds a
+    /// section, a JSON or YAML reader folds a container. The key hints and the
+    /// status messages both take their wording from here so they cannot drift
+    /// apart again.
+    pub fn fold_unit(self) -> (&'static str, &'static str) {
+        match self {
+            DocumentKind::Markdown => ("section", "sections"),
+            DocumentKind::Json | DocumentKind::Yaml => ("container", "containers"),
+        }
+    }
+
     /// Whether this format is read through the structured document model.
     pub fn is_structured(self) -> bool {
         matches!(self, DocumentKind::Json | DocumentKind::Yaml)

@@ -239,12 +239,8 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
         ));
     }
 
-    // The words differ because the thing does: a Markdown reader folds a
-    // section, a JSON or YAML reader folds a container.
-    let (unit, units) = match ctx.format {
-        DocumentKind::Markdown => ("section", "all sections"),
-        _ => ("container", "all containers"),
-    };
+    let (unit, units) = ctx.format.fold_unit();
+    let units = format!("all {units}");
     let fold = if ctx.capabilities.folding {
         let mut fold_rows = vec![
             row(keys, Action::ToggleFold, &format!("toggle {unit}")),
@@ -258,7 +254,7 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
                 keys,
                 (Action::CollapseAll, "collapse all"),
                 (Action::ExpandAll, "expand all"),
-                units,
+                &units,
             ),
         ];
         // `Enter` folds when the cursor is on a structural row and follows a

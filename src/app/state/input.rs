@@ -355,12 +355,14 @@ impl App {
             Action::CollapseAll => {
                 self.folds.collapse_all();
                 self.after_fold_change();
-                self.set_message("all sections collapsed");
+                let (_, units) = self.doc.kind().fold_unit();
+                self.set_message(format!("all {units} collapsed"));
             }
             Action::ExpandAll => {
                 self.folds.expand_all();
                 self.after_fold_change();
-                self.set_message("all sections expanded");
+                let (_, units) = self.doc.kind().fold_unit();
+                self.set_message(format!("all {units} expanded"));
             }
             Action::CommandPrompt => {
                 self.command.open();
@@ -853,5 +855,26 @@ mod tests {
         assert_eq!(a.mode(), Mode::Normal);
         assert!(a.config.center, "Esc applied nothing");
         assert!(a.command.line.is_empty());
+    }
+
+    /// `zM`/`zR` report what they folded in the same word the key hints
+    /// beside them use, which depends on the format.
+    #[test]
+    fn fold_all_messages_name_what_the_format_folds() {
+        let mut a = app();
+        a.apply(Action::CollapseAll);
+        assert_eq!(a.message(), Some("all sections collapsed"));
+        a.apply(Action::ExpandAll);
+        assert_eq!(a.message(), Some("all sections expanded"));
+
+        for mut a in [
+            crate::testing::json_app(r#"{"a": {"b": 1}, "c": [1, 2]}"#),
+            crate::testing::yaml_app("a:\n  b: 1\nc:\n  - 1\n  - 2\n"),
+        ] {
+            a.apply(Action::CollapseAll);
+            assert_eq!(a.message(), Some("all containers collapsed"));
+            a.apply(Action::ExpandAll);
+            assert_eq!(a.message(), Some("all containers expanded"));
+        }
     }
 }
