@@ -1418,6 +1418,35 @@ mod tests {
         assert_eq!(tree.to_plain_text(), before);
     }
 
+    /// Spec §20.4 / AC-18: Markdown text is document-controlled exactly like
+    /// a JSON string. Every construct assembles its spans through
+    /// `push_span`, so every construct is checked here.
+    #[test]
+    fn markdown_text_cannot_carry_terminal_controls() {
+        let src = concat!(
+            "# H\u{1b}[31m\n\n",
+            "text \u{1b}]0;title\u{7} &#27;[1m `c\u{1b}d` \u{9b}x \u{202e}y\n\n",
+            "| a\u{1b} | b |\n|---|---|\n| \u{1b}x | y |\n\n",
+            "```\ncode\u{1b}[2J\n```\n\n",
+            "[li\u{1b}cnk](https://example.com)\n",
+        );
+        let doc = DocumentModel::markdown(parse(src));
+        let theme = Theme::dark();
+        let tree = Layout::build(&doc, &LayoutOptions::new(80, &theme));
+        for line in &tree.lines {
+            for span in &line.spans {
+                assert!(
+                    !crate::util::text::needs_sanitizing(&span.text),
+                    "{:?}",
+                    span.text
+                );
+            }
+        }
+        let text = tree.to_plain_text();
+        assert!(text.contains("text \u{fffd}]0;title\u{fffd}"), "{text}");
+        assert!(text.contains("li\u{fffd}cnk"), "{text}");
+    }
+
     /// How fast the layout is, is the benchmarks' claim (`benches/`), not a
     /// wall-clock assertion here: a fixed millisecond budget says nothing on
     /// a machine that is busy compiling something else (spec §19.3).

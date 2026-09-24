@@ -107,6 +107,17 @@ every key, every setting and every behaviour it had in 1.2.
   structure does, and an action that cannot apply says so rather than doing
   nothing.
 
+### Fixed
+
+- **A Markdown document can no longer send escape sequences to the
+  terminal.** Text in headings, paragraphs, lists, tables, quotes, footnotes
+  and code blocks reached the output unfiltered, so a hostile file could set
+  the window title, recolour the screen or — through the text of a link in a
+  terminal with OSC 8 hyperlinks — reset the terminal outright. Markdown text
+  now goes through the same sanitising JSON and YAML already did: controls,
+  C1 characters and bidirectional overrides are drawn as `U+FFFD`, in the
+  pager and in piped output alike. 1.x behaved the same way.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

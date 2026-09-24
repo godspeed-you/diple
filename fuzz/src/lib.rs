@@ -69,6 +69,18 @@ pub fn layout(data: &[u8]) {
     opts.unicode = control & 16 == 0;
     opts.footnotes = control & 32 == 0;
     let tree = Layout::build(&DocumentModel::markdown(doc), &opts);
+    // Spec §23.4: no uncontrolled escapes, for Markdown exactly as for the
+    // structured formats. A heading, a code block, a table cell and a link's
+    // text all end up here.
+    for line in &tree.lines {
+        for span in &line.spans {
+            assert!(
+                !has_terminal_controls(&span.text),
+                "a rendered span must not carry terminal controls: {:?}",
+                span.text
+            );
+        }
+    }
     let _ = tree.to_plain_text();
 }
 

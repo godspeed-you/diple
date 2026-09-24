@@ -188,6 +188,9 @@ pub fn push_span(
     if text.is_empty() {
         return;
     }
+    // Every Markdown span is assembled here, so this is where document text is
+    // made safe for the terminal — the same policy `StyledSpan::new` applies.
+    let text = &*crate::util::text::sanitized(text);
     if let Some(last) = line.last_mut() {
         if last.style == style && last.link == link && last.search_match == search {
             last.text.push_str(text);

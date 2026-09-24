@@ -21,7 +21,9 @@ const VS15: char = '\u{fe0e}';
 ///   as a single emoji of width 2 (`👩‍💻`, `⚠️`),
 /// * a cluster whose base character is wide counts 2,
 /// * combining marks add nothing,
-/// * control characters count 0.
+/// * control and bidi characters count 1, because the terminal never sees
+///   them: [`crate::util::text`] draws each as a space or `U+FFFD`, and a
+///   width that disagreed would let a hostile line outgrow its column.
 pub fn grapheme_width(cluster: &str) -> usize {
     if cluster.is_empty() {
         return 0;
@@ -34,7 +36,10 @@ pub fn grapheme_width(cluster: &str) -> usize {
         if c == VS15 {
             continue;
         }
-        w += UnicodeWidthChar::width(c).unwrap_or(0);
+        w += match crate::util::text::replacement(c) {
+            Some(_) => 1,
+            None => UnicodeWidthChar::width(c).unwrap_or(0),
+        };
     }
     w
 }
@@ -42,8 +47,8 @@ pub fn grapheme_width(cluster: &str) -> usize {
 /// Whether `b` is a printable ASCII byte.
 ///
 /// Every ASCII byte in `0x20..=0x7e` is exactly one cell wide; `\x7f` (DEL) and
-/// everything below `0x20` are control characters of zero width, which is what
-/// [`grapheme_width`] reports for them. The fast path below therefore has to
+/// everything below `0x20` are control characters that are drawn replaced,
+/// which [`grapheme_width`] accounts for. The fast path below therefore has to
 /// exclude them, otherwise `width` and `grapheme_width` disagree and
 /// `width(split_at_width(s, n).0) > n` becomes reachable (over-counted table
 /// and column widths).
@@ -377,14 +382,17 @@ mod tests {
     }
 
     #[test]
-    fn ascii_control_characters_are_zero_width() {
-        // The ASCII fast path used to return `str::len()`, counting
-        // control bytes as one cell while `grapheme_width` counted them as
-        // zero, so `width(split_at_width(s, n).0) > n` was reachable.
-        assert_eq!(width("\u{1}"), 0);
-        assert_eq!(width("\u{7f}"), 0, "DEL");
-        assert_eq!(width("a\u{1}b"), 2);
-        assert_eq!(width("a\tb"), 2, "tabs are expanded before measuring");
+    fn control_characters_are_as_wide_as_what_replaces_them() {
+        // They never reach the terminal as themselves: `util::text` draws each
+        // as a space or U+FFFD, one cell. Counting them as zero let a hostile
+        // line outgrow its column once it was sanitised. The fast path must
+        // still agree with `grapheme_width`, or `width(split_at_width(s,
+        // n).0) > n` becomes reachable.
+        assert_eq!(width("\u{1}"), 1);
+        assert_eq!(width("\u{7f}"), 1, "DEL");
+        assert_eq!(width("a\u{1}b"), 3);
+        assert_eq!(width("a\u{202e}b"), 3, "a bidi override");
+        assert_eq!(width(crate::util::text::sanitized("a\u{1}b").as_ref()), 3);
         for s in ["a\u{1}b", "\u{7}\u{7}\u{7}", "x\u{1b}[0m"] {
             assert_eq!(
                 width(s),

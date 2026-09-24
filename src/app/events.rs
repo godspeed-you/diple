@@ -451,10 +451,13 @@ fn draw_hyperlinks(app: &App, content: Rect, out: &mut impl Write) -> io::Result
                     queue!(
                         out,
                         MoveTo(x, content.y + row as u16),
+                        // Written past the backend, which would otherwise
+                        // be what drops a control character, so the text is
+                        // made safe here as well as where it was laid out.
                         Print(format!(
                             "{}{}{}",
                             osc8_start(&link.url),
-                            span.text,
+                            crate::util::text::sanitized(&span.text),
                             osc8_end()
                         ))
                     )?;

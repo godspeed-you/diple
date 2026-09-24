@@ -50,7 +50,7 @@ fn is_unsafe(c: char) -> bool {
 }
 
 /// What a character is replaced with, or `None` when it is safe as it is.
-fn replacement(c: char) -> Option<char> {
+pub(crate) fn replacement(c: char) -> Option<char> {
     match c {
         '\t' | '\n' | '\r' => Some(' '),
         c if is_unsafe(c) => Some(REPLACEMENT),
