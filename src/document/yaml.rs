@@ -838,10 +838,20 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
             return true;
         }
     }
-    // A mapping with at least two entries at the top level.
+    // A mapping with at least two entries at the top level — unless every
+    // value is a sentence, which is how prose that happens to put a colon
+    // after its first word reads: `Note: this is important.` and `Q: why?`.
     doc.roots().iter().any(|root| {
-        doc.node(root.node)
-            .is_some_and(|n| matches!(n.kind, StructuredNodeKind::Mapping) && n.child_count >= 2)
+        doc.node(root.node).is_some_and(|n| {
+            matches!(n.kind, StructuredNodeKind::Mapping)
+                && n.child_count >= 2
+                && !doc.children(root.node).iter().all(|&child| {
+                    doc.node(child).and_then(|c| c.scalar()).is_some_and(|v| {
+                        v.style == ScalarStyle::Plain
+                            && v.text.trim_end().ends_with(['.', '!', '?', '\u{2026}'])
+                    })
+                })
+        })
     })
 }
 

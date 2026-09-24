@@ -247,6 +247,8 @@ mod tests {
             "null",
             "",
             "---\ntitle: Post\n---\n\nProse with **bold**.\n",
+            "Note: this is important.\nAlso: check that.\n",
+            "Q: why?\nA: because.\n",
         ] {
             assert_eq!(
                 open("<stdin>", text).format,

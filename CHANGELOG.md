@@ -162,6 +162,12 @@ every key, every setting and every behaviour it had in 1.2.
   and a multi-document stream's `--- Document 1` — started scrolled out of
   sight.
 
+- **Two lines of prose are no longer mistaken for YAML.** `Note: this is
+  important.` followed by `Also: check that.` is a valid two-entry mapping,
+  and detection took it as one. A flat mapping whose every value is a
+  sentence now stays Markdown; `name: diple` and `description: A pager.`
+  are still YAML.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the
