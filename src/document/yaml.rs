@@ -837,15 +837,16 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
     if !coherent {
         return false;
     }
-    // Several documents in one stream.
-    if doc.roots().len() > 1 {
-        return true;
-    }
     // `%YAML` or `%TAG`.
     if doc.roots().iter().any(|r| !r.directives.is_empty()) {
         return true;
     }
-    for node in doc.nodes() {
+    // Deliberately *not* signals, though YAML has them: several documents
+    // (`---` is also a Markdown rule, and front matter is a document) and a
+    // flat top-level mapping (`Status: done` over `Owner: alice` is a note).
+    // Both were tried, and both claimed ordinary Markdown; a flat YAML file
+    // piped in needs `--format yaml`.
+    doc.nodes().iter().any(|node| {
         // An anchor, an alias or an explicit tag.
         if node.anchor().is_some()
             || node.tag().is_some()
@@ -855,7 +856,7 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
         }
         // A mapping inside a container, in a shape a Markdown list cannot
         // take. `- Fast: written in Rust` is a one-entry mapping inside a
-        // sequence, and `Steps:` over a list is a sequence inside a mapping —
+        // sequence, and `Pros:` over a list is a sequence inside a mapping —
         // both are ordinary Markdown. What prose does not write is a mapping
         // under a mapping key (`metadata:` over `name: web`), or a mapping of
         // two entries or more inside anything (`- name: x` over `image: y`).
@@ -864,43 +865,10 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
                 .parent
                 .and_then(|p| doc.node(p))
                 .is_some_and(|p| matches!(p.kind, StructuredNodeKind::Mapping));
-            if under_a_key || node.child_count >= 2 {
-                return true;
-            }
+            return under_a_key || node.child_count >= 2;
         }
-    }
-    // A mapping with at least two entries at the top level — unless it reads
-    // as prose: a key with a space in it (`Shopping list:`), or values that
-    // are all sentences or phrases (`Note: this is important.`, `Error: file
-    // not found`).
-    doc.roots().iter().any(|root| {
-        doc.node(root.node).is_some_and(|n| {
-            matches!(n.kind, StructuredNodeKind::Mapping)
-                && n.child_count >= 2
-                && !flat_mapping_reads_as_prose(doc, root.node)
-        })
+        false
     })
-}
-
-/// Whether a top-level mapping looks like lines of prose that each happen to
-/// put a colon after their first word.
-fn flat_mapping_reads_as_prose(doc: &StructuredDocument, mapping: NodeId) -> bool {
-    let children = doc.children(mapping);
-    let key_with_space = children.iter().any(|&child| {
-        doc.node(child).and_then(|c| c.key()).is_some_and(|k| {
-            !k.complex && k.style == ScalarStyle::Plain && k.name().contains(char::is_whitespace)
-        })
-    });
-    let all_phrases = children.iter().all(|&child| {
-        doc.node(child).and_then(|c| c.scalar()).is_some_and(|v| {
-            let text = v.text.trim();
-            v.style == ScalarStyle::Plain
-                && v.kind == ScalarKind::String
-                && (text.contains(char::is_whitespace)
-                    || text.ends_with(['.', '!', '?', '\u{2026}']))
-        })
-    });
-    key_with_space || all_phrases
 }
 
 #[cfg(test)]
@@ -1583,9 +1551,8 @@ mod tests {
         assert!(confident(
             "metadata:\n  name: nginx\nspec:\n  replicas: 3\n"
         ));
-        assert!(confident("apiVersion: apps/v1\nkind: Deployment\n"));
         assert!(confident("a: &x 1\nb: *x\n"));
-        assert!(confident("---\na: 1\n---\nb: 2\n"));
+        assert!(confident("---\na:\n  x: 1\n---\nb:\n  y: 2\n"));
         assert!(confident("%YAML 1.2\n---\na: 1\n"));
         assert!(confident("items:\n  - name: a\n    image: b\n"));
         assert!(confident(
@@ -1620,6 +1587,15 @@ mod tests {
             // Lines of prose that each put a colon after their first word.
             "Note: this is important.\nAlso: check that.\n",
             "Error: file not found\nHint: try again\n",
+            // A flat mapping and a multi-document stream are YAML, and are
+            // also notes and Markdown separated by rules; they need
+            // `--format yaml` when nothing else says so.
+            "apiVersion: apps/v1\nkind: Deployment\n",
+            "---\na: 1\n---\nb: 2\n",
+            "Status: done\nOwner: alice\n",
+            "Pros:\n\n- fast\n- small\n\nCons:\n\n- young\n",
+            "- one\n- two\n\n---\n\n- three\n- four\n",
+            "---\ntitle: Post\n---\n\n# Heading\n\n- a\n- b\n",
         ] {
             assert!(!confident(src), "{src:?} must stay Markdown");
         }

@@ -57,8 +57,10 @@ Only a confident guess is taken: a document opening with
 .BR { " or " [
 that parses as strict JSON, or a YAML stream whose roots are all non\-empty
 collections and which shows structure prose does not produce: a mapping
-nested under a key, a mapping of several entries inside a list, several
-documents, an anchor or a tag. This is what makes
+nested under a key, a mapping of several entries inside a list, an anchor, a
+tag or a directive. A flat mapping or a stream split by
+.B \-\-\-
+alone stays Markdown. This is what makes
 .B kubectl get deployment nginx \-o yaml | diple
 open as YAML with nothing to configure.
 .TP

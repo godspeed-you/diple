@@ -189,9 +189,11 @@ every key, every setting and every behaviour it had in 1.2.
   YAML, and detection claimed them — so `cat README.md | diple` could show a
   sequence where 1.x showed bullets. Detection now counts only structure prose
   does not write: a mapping under a mapping key, a mapping of two entries or
-  more inside a container, several documents, directives, anchors, aliases
-  or tags, or a top-level mapping whose keys and values do not read as
-  phrases. `kubectl … -o yaml`, Compose files and Ansible playbooks are
+  more inside a container, directives, anchors, aliases or tags. A flat
+  mapping (`Status: done` over `Owner: alice`) and a stream split by `---`
+  (lists separated by a rule, front matter over a list) are no longer taken
+  as YAML; a flat YAML file piped in needs `--format yaml`. `kubectl … -o
+  yaml`, Compose files, GitHub Actions, Ansible playbooks and Helm output are
   recognised as before.
 
 ### Breaking

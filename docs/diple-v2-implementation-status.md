@@ -193,6 +193,11 @@ with YAML front matter as Markdown — its body parses as a bare scalar. JSON is
 claimed only when the first token is `{` or `[` *and* strict parsing succeeds,
 so a bare `42` on stdin stays Markdown.
 
+Narrowed again after the third audit, by the spec owner's decision
+(2026-09-24, "conservative"): multiple documents and a flat top-level mapping
+are no longer signals at all, and input whose first content line is indented
+is never YAML. Spec §6.5 and §6.6 were revised to say so.
+
 Narrowed after the second audit found Markdown lists claimed as YAML: "a
 container inside a container" was a signal, and `- Fast: written in Rust` is
 one. The signals are now a mapping under a mapping key, a mapping of two or

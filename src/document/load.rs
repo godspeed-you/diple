@@ -106,7 +106,7 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
             Err(_) => {}
         }
     }
-    if probably_yaml(&source) {
+    if !starts_indented(source.text()) && probably_yaml(&source) {
         match yaml::parse(&source) {
             Ok(document) if yaml::is_confidently_yaml(&document) => {
                 return Ok(LoadedDocument {
@@ -124,6 +124,20 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
         detected: true,
         model: DocumentModel::markdown(markdown::parse_source(source)),
     })
+}
+
+/// Whether the first line with content on it — past blank lines, comments,
+/// directives and `---` — is indented. A YAML stream starts at the margin;
+/// Markdown that starts indented is a code block (`# Config` over four
+/// indented lines of configuration), which YAML would read as a nested
+/// mapping under nothing.
+fn starts_indented(text: &str) -> bool {
+    text.lines()
+        .find(|line| {
+            let t = line.trim_start();
+            !(t.is_empty() || t.starts_with('#') || t.starts_with('%') || t.starts_with("---"))
+        })
+        .is_some_and(|line| line.starts_with([' ', '\t']))
 }
 
 /// How much of a large input the YAML probe reads first.
@@ -342,6 +356,7 @@ mod tests {
             "# ADR 1\n\nStatus: Accepted\nDate: 2024-03-01\n\n## Context\n\nWe need X.\n",
             "[2024, the year] in review\n",
             "[1, Smith et al.] showed this.\n",
+            "# Config\n\n    server:\n      port: 80\n",
         ] {
             let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text))
                 .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));

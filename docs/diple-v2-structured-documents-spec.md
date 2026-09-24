@@ -620,16 +620,23 @@ Anonymous input may be auto-detected as YAML only when:
 1. YAML parsing succeeds; and
 2. at least one strong structured-YAML signal is present.
 
-Strong signals include one or more of:
+A strong signal is structure that prose and Markdown do not produce. Strong signals are:
 
-- `%YAML` directive;
-- explicit document marker `---` followed by a mapping/sequence/document structure;
-- at least two mapping entries in a structural context;
-- nested mapping;
-- nested sequence containing mappings;
-- mapping containing a sequence;
-- anchor, alias, or explicit tag syntax;
-- multiple YAML documents.
+- a `%YAML` or `%TAG` directive;
+- a mapping nested under a mapping key;
+- a mapping of two or more entries inside a sequence or mapping;
+- anchor, alias, or explicit tag syntax.
+
+The following are valid YAML structure but are **not** strong signals, because ordinary Markdown produces them:
+
+- a sequence of scalars, or of one-entry mappings (`- Fast: written in Rust`);
+- a mapping containing a sequence (`Pros:` over a list);
+- a flat mapping of scalars, however many entries (`Status: done` over `Owner: alice`);
+- an explicit document marker `---` or multiple documents (`---` is also a Markdown thematic break, and YAML front matter is a document).
+
+Input whose first content line is indented (an indented Markdown code block) is not auto-detected as YAML.
+
+*Revised 2026-09-24:* the first 2.0 draft listed "at least two mapping entries", "mapping containing a sequence", "nested sequence containing mappings" (without requiring more than one entry per mapping), an explicit `---` marker and "multiple YAML documents" as strong signals. Three independent audits showed each of them claiming ordinary Markdown on stdin, which AC-06 forbids; they were narrowed or withdrawn in favour of AC-06.
 
 The following anonymous input should default to Markdown rather than YAML:
 
@@ -663,6 +670,8 @@ The common output of tools such as `kubectl -o yaml` contains enough nested mapp
 The detected format shall be visible in the status line or document metadata area.
 
 If auto-detection chooses YAML for stdin and parsing later fails due to incomplete streaming input, the user must receive a useful error rather than silent fallback after partial interpretation.
+
+Detection can only recognise incomplete input where the parser can: a JSON value, string, keyword or container left open at the end of the input, a JSON object that fails after its first member name, and a YAML quoted scalar or flow collection left open after lines that are themselves confidently YAML (§6.5). YAML cut at a point where the remainder still parses — or fails in a way prose also fails, such as a key without its colon on the last line — cannot be told apart from Markdown and falls back; `--format yaml` or a `.yaml` name makes such input an error. (*Revised 2026-09-24*, after a broader rule refused ordinary notes with exit 1.)
 
 diple reads stdin to completion before semantic parsing; it is not a live streaming YAML parser in 2.0.
 
