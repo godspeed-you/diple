@@ -102,6 +102,21 @@ impl DocumentError {
         self
     }
 
+    /// The report in one line, for a status line that has one:
+    /// `YAML parse error at bad.yaml:2:8: unclosed quote`. The excerpt is
+    /// left out — it needs rows of its own to point at anything.
+    pub fn summary(&self) -> String {
+        let at = match self.position {
+            Some(Position { line, column }) => format!("{}:{line}:{column}", self.source_name),
+            None => self.source_name.clone(),
+        };
+        sanitize(&format!(
+            "{} parse error at {at}: {}",
+            self.format.label(),
+            self.message
+        ))
+    }
+
     /// The full report: heading, position, source excerpt with a caret, and
     /// the parser's message.
     ///
@@ -178,6 +193,16 @@ mod tests {
             "config.yaml",
             "a: 1\nb: 2\nspec:\n  containers:\n     - name: nginx\n    image: x\nz: 9\n",
         )
+    }
+
+    #[test]
+    fn the_summary_is_one_line() {
+        let source = SourceDocument::new("bad.yaml", "a: 1\nb: \"x\n");
+        let err = DocumentError::at(&source, DocumentKind::Yaml, 8, "unclosed\nquote");
+        assert_eq!(
+            err.summary(),
+            "YAML parse error at bad.yaml:2:4: unclosed quote"
+        );
     }
 
     #[test]

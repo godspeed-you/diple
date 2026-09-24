@@ -148,6 +148,10 @@ every key, every setting and every behaviour it had in 1.2.
   its quotes. The outline's previews now quote a string where the document
   does, so the string `"3"` no longer passes for the number `3` there.
 
+- **`:open` reports a document that does not parse on one line** —
+  `YAML parse error at bad.yaml:2:8: unclosed quote` — instead of squashing
+  the multi-line report, excerpt and all, onto the status line.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

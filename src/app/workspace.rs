@@ -609,7 +609,9 @@ impl Workspace {
         // document and a YAML one can sit side by side in one split.
         let source = crate::document::SourceDocument::new(path.display().to_string(), text);
         let doc = crate::document::load(self.format, source)
-            .map_err(|error| error.report())?
+            // One line: the status line cannot show the excerpt, and the
+            // multi-line report squashed onto it read as noise.
+            .map_err(|error| error.summary())?
             .model;
         let color = crate::app::color_level(self.config.color, &self.caps);
         let theme = crate::app::resolve_theme(&self.config.theme, color);
@@ -885,6 +887,24 @@ mod tests {
         let message = ws.focused().message().unwrap_or_default().to_string();
         assert!(
             message.starts_with("cannot read /no/such/file.md"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_document_that_does_not_parse_reports_it_on_one_line() {
+        let dir = std::env::temp_dir().join(format!("diple-open-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.yaml");
+        std::fs::write(&bad, "a: 1\nb: \"x\n").unwrap();
+        let mut ws = workspace((100, 24));
+        command(&mut ws, &format!("open tab {}", bad.display()));
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(ws.tabs.len(), 1);
+        let message = ws.focused().message().unwrap_or_default().to_string();
+        assert!(!message.contains('\n'), "{message:?}");
+        assert!(
+            message.starts_with("YAML parse error at ") && message.contains("bad.yaml:"),
             "{message}"
         );
     }
