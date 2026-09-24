@@ -10,13 +10,13 @@ the commit after it, on `main`, 2026-09-18
 ## Resuming: what is left
 
 **This section is the only part of this file that is about the future. Delete
-it when the three items below are done.** Everything else records state that
+it when the item below is done.** Everything else records state that
 was true at `f7f7eef` and was checked against the code, not remembered.
 
 The release is functionally complete: 731 tests pass, every gate
 in §6 is green, and §7 records an evidence-backed status for AC-01…AC-23. What
-is missing is the *independent* sign-off and two small fixes that were
-deliberately held back so that the sign-off would run against a stationary
+is missing is the *independent* sign-off. The two small fixes that were held
+back for it (items 2 and 3) are in, so the audit can run against a stationary
 tree.
 
 ### 1. Run the independent compliance audit — the actual gate
@@ -42,29 +42,22 @@ architecture rather than a feature.
 Any mandatory criterion that is not VERIFIED means the release is not
 complete. Fix, then audit again.
 
-### 2. `zM` / `zR` say "sections" in a document that has none
+### 2. `zM` / `zR` say "sections" in a document that has none — done
 
-`src/app/state/input.rs:358,363` set the message `all sections collapsed` /
-`all sections expanded` for every format. The key hints beside them already
-say "all containers" for JSON and YAML (`src/app/hints.rs:244-247`), so the
-two disagree on screen in the same frame.
+Both the status message and the key hints now take the word from
+`DocumentKind::fold_unit` (`src/document/format.rs`), pinned by
+`fold_all_messages_name_what_the_format_folds` in `src/app/state/input.rs`.
 
-Fix by giving both the same source of wording rather than by editing the
-string in one place — that is how they drifted apart. Everything else in the
-app layer is already format-aware (`no_structure_message`, `fold_current`,
-the hint groups), so this is the last one.
+### 3. A wall-clock assertion that flakes under load — done
 
-### 3. A wall-clock assertion that flakes under load
+`src/layout/mod.rs` keeps the determinism check as `deterministic`; the
+10 ms budget is gone and the benchmarks carry the performance claim.
 
-`src/layout/mod.rs:1436` asserts that laying out the 1 KB README takes under
-10 ms. It is inherited from 1.x, it passes comfortably on an idle machine, and
-it was observed failing while three other jobs were compiling.
-
-Spec §19.3 argues against exactly this — "rather than choosing meaningless
-universal millisecond numbers" — and asks for budgets derived from measurement
-on a reference environment. Those benchmarks now exist (`benches/startup.rs`,
-`benches/large.rs`). Keep the determinism half of the test, which is valuable
-and stable, and let the benchmarks carry the performance claim.
+While running `scripts/check.sh` for these, the doctest in
+`src/mermaid/mod.rs` turned out not to compile: it still imported
+`diple::document::ast`, which the refactor moved to `document::markdown::ast`.
+So "every gate in §6 is green" was not true of the doctests at `f7f7eef`; it is
+now.
 
 ### What not to redo
 
