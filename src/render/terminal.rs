@@ -238,6 +238,21 @@ impl StatusBar<'_> {
         }
 
         if lw + rw + 2 > width {
+            // Too narrow for everything. The progress counters were on this
+            // line in 1.x and a reader orients by them, so they outlast the
+            // format label, which goes first, and then the message, which
+            // is shortened; only a line too narrow for the name and the
+            // counters loses the counters too.
+            let mut short = self.filename.to_string();
+            if let Some(m) = self.message.filter(|m| !m.is_empty()) {
+                short = format!("{short}  {m}");
+            }
+            let room = width.saturating_sub(rw + 2);
+            if unicode::width(self.filename) <= room {
+                let short = unicode::truncate_with_ellipsis(&short, room, ellipsis(self.unicode));
+                let pad = width - unicode::width(&short) - rw;
+                return format!("{short}{}{right}", " ".repeat(pad));
+            }
             return unicode::truncate_with_ellipsis(
                 &format!("{left}  {right}"),
                 width,
@@ -972,6 +987,23 @@ mod tests {
         assert_eq!(unicode::width(&text), 40);
         // Narrow terminals truncate instead of panicking.
         assert!(unicode::width(&bar.text(10)) <= 10);
+    }
+
+    /// With a message showing on a tight line, the counters 1.x always
+    /// showed outlast the format label and the end of the message.
+    #[test]
+    fn a_tight_status_line_keeps_its_counters() {
+        let theme = Theme::dark();
+        let mut bar = status_bar(&theme);
+        bar.filename = "docs/terminal-compatibility-checklist.md";
+        bar.percent = 2;
+        bar.line = 11;
+        bar.total = 388;
+        bar.message = Some("no further heading at this level");
+        let text = bar.text(80);
+        assert!(text.ends_with("2%  11/388"), "{text:?}");
+        assert!(text.starts_with("docs/terminal-compatibility-checklist.md  no further"));
+        assert_eq!(unicode::width(&text), 80);
     }
 
     /// A reader who piped something in has to be able to see what diple
