@@ -27,7 +27,7 @@
 //!
 //! ```
 //! use diple::config::schema::MermaidConfig;
-//! use diple::document::ast::MermaidBlock;
+//! use diple::document::markdown::ast::MermaidBlock;
 //! use diple::mermaid::{select_backend, MermaidOutput, RenderEnvironment};
 //!
 //! let cfg = MermaidConfig::default();
