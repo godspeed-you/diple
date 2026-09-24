@@ -107,6 +107,11 @@ every key, every setting and every behaviour it had in 1.2.
   structure does, and an action that cannot apply says so rather than doing
   nothing.
 
+- In Markdown, `{`, `}` and a jump from the outline now put the heading on
+  the same screen row as `[` and `]` do — with the same context above it —
+  where 1.x placed it one row lower. Every way of going to a heading now
+  lands in the same place.
+
 ### Fixed
 
 - **A Markdown document can no longer send escape sequences to the

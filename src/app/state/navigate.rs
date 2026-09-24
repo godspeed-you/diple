@@ -135,10 +135,13 @@ impl App {
                 self.doc.previous_structural(cursor)
             };
             let Some(node) = next else {
-                self.set_message(if forward {
-                    "no further structural node"
-                } else {
-                    "no previous structural node"
+                let markdown = self.doc.kind() == crate::document::DocumentKind::Markdown;
+                self.set_message(match (forward, markdown) {
+                    // Markdown keeps the words 1.x used (spec P4).
+                    (true, true) => "no further heading",
+                    (false, true) => "no previous heading",
+                    (true, false) => "no further structural node",
+                    (false, false) => "no previous structural node",
                 });
                 return;
             };
@@ -169,10 +172,12 @@ impl App {
                 self.doc.previous_sibling(cursor)
             };
             let Some(node) = next else {
-                self.set_message(if forward {
-                    "no further sibling"
-                } else {
-                    "no previous sibling"
+                let markdown = self.doc.kind() == crate::document::DocumentKind::Markdown;
+                self.set_message(match (forward, markdown) {
+                    (true, true) => "no further heading at this level",
+                    (false, true) => "no previous heading at this level",
+                    (true, false) => "no further sibling",
+                    (false, false) => "no previous sibling",
                 });
                 return;
             };
@@ -631,6 +636,27 @@ mod tests {
         assert!(text.contains("needle"), "the section was revealed");
         let m = a.search.current_match().expect("a current match");
         assert!(!a.doc.is_hidden(m.node, &a.folds));
+    }
+
+    /// Markdown keeps the words 1.x used at the end of a jump (spec P4);
+    /// JSON and YAML have no headings to speak of.
+    #[test]
+    fn the_end_of_a_jump_is_named_in_the_documents_terms() {
+        let mut a = app();
+        for _ in 0..8 {
+            a.apply(Action::NextHeading);
+        }
+        assert_eq!(a.message(), Some("no further heading"));
+        a.apply(Action::NextHeadingSameLevel);
+        assert_eq!(a.message(), Some("no further heading at this level"));
+
+        let mut j = crate::testing::json_app(r#"{"a": {"b": 1}, "c": {"d": 2}}"#);
+        for _ in 0..8 {
+            j.apply(Action::NextHeading);
+        }
+        assert_eq!(j.message(), Some("no further structural node"));
+        j.apply(Action::NextHeadingSameLevel);
+        assert_eq!(j.message(), Some("no further sibling"));
     }
 
     /// The first screen of a JSON document starts at its root brace, with
