@@ -173,6 +173,10 @@ every key, every setting and every behaviour it had in 1.2.
   does, rather than dropping it, and a percent-encoded control in a tag reads
   back as the escape the source wrote.
 
+- **A JSON document that starts with a UTF-8 byte-order mark opens.** A
+  `.json` file saved with one failed with "found `\u{feff}`", and piped in it
+  fell back to Markdown; the mark is now ignored, as RFC 8259 allows.
+
 - **`:open` reports a document that does not parse on one line** —
   `YAML parse error at bad.yaml:2:8: unclosed quote` — instead of squashing
   the multi-line report, excerpt and all, onto the status line.

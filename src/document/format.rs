@@ -130,7 +130,7 @@ pub fn from_extension(name: &str) -> Option<DocumentKind> {
 /// extension or `--format json` is what makes a scalar root a JSON document.
 pub fn looks_like_json_container(text: &str) -> bool {
     matches!(
-        text.trim_start_matches(|c: char| c.is_whitespace())
+        text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
             .as_bytes()
             .first(),
         Some(b'{') | Some(b'[')

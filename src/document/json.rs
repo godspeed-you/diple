@@ -157,6 +157,11 @@ impl<'a> Parser<'a> {
 
     fn run(&mut self) -> Result<(), DocumentError> {
         self.builder.begin_document(true, Vec::new());
+        // RFC 8259 §8.1 lets a parser ignore a leading byte-order mark, and
+        // editors on Windows still write one.
+        if self.text.starts_with("\u{feff}".as_bytes()) {
+            self.pos = 3;
+        }
         self.skip_ws();
         if self.peek().is_none() {
             return Err(self.error(self.pos, "the document is empty"));
@@ -541,6 +546,15 @@ mod tests {
                 format!("{}{} {what}", "  ".repeat(n.depth), d.label(n.id))
             })
             .collect()
+    }
+
+    #[test]
+    fn a_leading_byte_order_mark_is_ignored() {
+        let d = parse(&SourceDocument::new("t.json", "\u{feff}{\"a\": 1}")).unwrap();
+        assert_eq!(d.node_count(), 2);
+        assert!(crate::document::format::looks_like_json_container(
+            "\u{feff}[1]"
+        ));
     }
 
     #[test]
