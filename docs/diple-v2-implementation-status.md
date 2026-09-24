@@ -3,61 +3,40 @@
 **Resumed from:** commit `b4cf2c4`
 **State described:** everything up to and including `f7f7eef` — this file is
 the commit after it, on `main`, 2026-09-18
-**Suite:** 731 tests, all passing
+**Suite:** 747 tests, all passing (as of `df27dc4`, 2026-09-24)
 
 ---
 
 ## Resuming: what is left
 
 **This section is the only part of this file that is about the future. Delete
-it when the item below is done.** Everything else records state that
-was true at `f7f7eef` and was checked against the code, not remembered.
+it when the item below is done.**
 
-The release is functionally complete: 731 tests pass, every gate
-in §6 is green, and §7 records an evidence-backed status for AC-01…AC-23. What
-is missing is the *independent* sign-off. The two small fixes that were held
-back for it (items 2 and 3) are in, so the audit can run against a stationary
-tree.
+### The independent audit ran, failed, and was fixed — run it again
 
-### 1. Run the independent compliance audit — the actual gate
+The first independent compliance audit ran on 2026-09-24 against `128fc52`
+(read the whole spec, drove the real binary in a pseudo-terminal, compared
+Markdown against the 1.2.0 binary). It classified 19 criteria VERIFIED and
+four not: **AC-18** (Markdown text reached the terminal unsanitised, including
+through OSC 8 link text), **AC-09** (the incremental search left the folds it
+previewed open, and revealing a container opened the container itself),
+**AC-10** (the breadcrumb could not tell `x › y` as one key from two) and
+**AC-17** (truncated structured input on stdin fell back to Markdown). It also
+listed smaller defects: unquoted keys, YAML tag rendering, the outline
+preview, the `:open` error, Markdown's end-of-jump wording, JSON opening one
+row down, a static `?` help, two lines of prose detected as YAML, and a
+Markdown slowdown caused by an eager search index.
 
-Not yet done. One was started in the session that produced `f7f7eef` and did
-not finish before the session ended, so **no independent review has been
-recorded**. §7's statuses are the implementer's own assessment; they are
-evidence-backed but they are not a second opinion.
-
-Use a fresh agent that had no part in the implementation. It must read the
-whole of `docs/diple-v2-structured-documents-spec.md`, treat §7 of this file
-as a claim rather than as evidence, exercise the real binary (including
-interactively — there is a working pseudo-terminal driver at
-`/tmp/diple-manual/drive.py` if that path still exists; otherwise write one,
-it is about forty lines), and classify every criterion VERIFIED / FAILED /
-NOT VERIFIED / DEFERRED. Press hardest on AC-01 (Markdown must not have
-regressed — compare against the 1.2.0 binary, `git worktree add /tmp/check-12
-8147fdc`), AC-09, AC-13, AC-18 (try escapes in keys, values, comments, tags,
-anchors *and* error messages, and check the status-line path, which is where
-the one real breach was found) and AC-23, which is a judgement about the
-architecture rather than a feature.
+Every one of those is fixed, each in its own commit between `fb90aba` and
+`df27dc4`, with a test; §7 below says which. None of that is a second
+opinion. **Run the audit again**, with the same brief as the first — a fresh
+agent that had no part in the fixes, treating §7 as a claim — and press
+hardest on the four criteria above and on AC-01, since three of the fixes
+touch paths Markdown shares. The 1.2.0 comparison binary is built from
+`git worktree add <dir> 8147fdc`.
 
 Any mandatory criterion that is not VERIFIED means the release is not
-complete. Fix, then audit again.
-
-### 2. `zM` / `zR` say "sections" in a document that has none — done
-
-Both the status message and the key hints now take the word from
-`DocumentKind::fold_unit` (`src/document/format.rs`), pinned by
-`fold_all_messages_name_what_the_format_folds` in `src/app/state/input.rs`.
-
-### 3. A wall-clock assertion that flakes under load — done
-
-`src/layout/mod.rs` keeps the determinism check as `deterministic`; the
-10 ms budget is gone and the benchmarks carry the performance claim.
-
-While running `scripts/check.sh` for these, the doctest in
-`src/mermaid/mod.rs` turned out not to compile: it still imported
-`diple::document::ast`, which the refactor moved to `document::markdown::ast`.
-So "every gate in §6 is green" was not true of the doctests at `f7f7eef`; it is
-now.
+complete.
 
 ### What not to redo
 
@@ -236,8 +215,12 @@ meaningful; the layout engine tracks the base offset per rendered row.
 
 ### D14 — escape sanitisation at one choke point
 
-`util/text.rs` + `StyledSpan::new`. Every piece of document text reaches the
-terminal through that constructor. C0/C1/DEL become U+FFFD, `\t`/`\n`/`\r`
+`util/text.rs`, applied by `StyledSpan::new` for structured text and by
+`layout::inline::push_span` for Markdown, which assembles its spans without
+the constructor; the OSC 8 writer in `app/events.rs` applies it again because
+it prints past the backend. (Until `fb90aba` only the first of the three
+existed, which is how Markdown text escaped it — the audit's AC-18 finding.)
+A replaced character is measured as the one cell its replacement takes. C0/C1/DEL become U+FFFD, `\t`/`\n`/`\r`
 become a space, and the bidirectional overrides/isolates/marks become U+FFFD.
 Ordinary Unicode is untouched and clean text is not copied. Satisfies spec
 §9.5, §20.4, AC-18.
@@ -485,11 +468,14 @@ Against the 1.2.0 binary, on the same machine, best of nine:
 | 1 MB | 0.12 s | 0.13 s |
 | 10 MB | 1.28 s | 1.49 s |
 
-Indistinguishable at any size a reader actually opens; about 16 % slower
-on a ten-megabyte document. That cost is terminal-escape sanitisation
-(D14), which is new in 2.0 and is what AC-18 requires — it is one extra
-pass over every span's text. It is a price the release means to pay, not
-a regression to remove.
+That table predates `2d87517`, and its explanation — sanitisation — was wrong:
+the audit measured the slowdown with Markdown text not sanitised at all. The
+cost was the Markdown search index, built eagerly at parse time (190 ms →
+370 ms and about 100 MB more on 10 MB) although piped output never searches.
+It is built on first use now. Re-measured with `hyperfine` on 2026-09-24,
+after the AC-18 fix added Markdown sanitising: 10 MB 1.53 s ± 0.03 against
+1.2.0's 1.59 s ± 0.29, 1 MB 158 ms ± 10 against 151 ms ± 2, same peak memory —
+within noise, with the sanitising measured separately at about 2 %.
 
 And the three formats are in the same class as each other on an 11 MB
 document: Markdown 3.1 s / 490 MB, YAML 3.2 s / 722 MB, JSON 4.4 s /
@@ -541,26 +527,27 @@ behaviour was exercised, not that the types exist.
 | AC-03 | JSON stdin auto-detects | **Verified** | `document/format.rs` + `load.rs` tests; `tests/cli_integration.rs`; manual `cat api.json \| diple`. |
 | AC-04 | YAML opens natively | **Verified** | `document/yaml.rs` (30 tests), `layout/structured.rs`, `tests/structured_fixtures.rs`; manual `diple k8s.yaml`. |
 | AC-05 | Common YAML pipelines work | **Verified** | D11 detection tests; manual `diple < detect.yaml` on `kubectl`-shaped nested mapping output, recognised without `--format`. |
-| AC-06 | Ambiguous text stays Markdown | **Verified** | Detection tests for prose, a Markdown list, `title: hello` and a bare `42` (D11); `ambiguous_stdin_stays_markdown` at the command line; manual `printf -- '- one\n- two\n' \| diple` renders bullets, not a sequence. |
+| AC-06 | Ambiguous text stays Markdown | **Verified** | Detection tests for prose, a Markdown list, `title: hello`, a bare `42` and two sentence-valued lines such as `Q: why?` / `A: because.` (D11, `df27dc4`); `ambiguous_stdin_stays_markdown` at the command line; manual `printf -- '- one\n- two\n' \| diple` renders bullets, not a sequence. |
 | AC-07 | Explicit override works | **Verified** | `cli/args.rs` tests; `an_explicit_format_overrides_name_and_content`; manual `--format markdown config.yaml`, `--format yaml -`, `--format json file.data`. |
 | AC-08 | Folding is semantic | **Verified** | `folding_never_depends_on_the_width`; `folds_cover_the_containers_and_nothing_else`; `structured_fixtures` collapse/reveal sweep; manual resize with folds held. |
-| AC-09 | Search reveals hidden matches | **Verified** | `search_reveals_a_match_hidden_inside_a_collapsed_section` (Markdown) and the structured counterpart leaving unrelated folds collapsed; manual `zM` then `/` opening exactly the ancestor path. |
-| AC-10 | Path orientation works | **Verified** | `document/path.rs` tests (keys with separators, indices, duplicates, multi-document roots); `render/terminal.rs` breadcrumb tests; manual live breadcrumb `spec › template › spec › containers › [0] › image`. |
+| AC-09 | Search reveals hidden matches | **Fixed after audit, awaiting re-audit** | `88faa4c`: `a_search_keeps_only_the_folds_its_accepted_match_needs`, `cancelling_a_search_closes_what_its_preview_opened`, `a_match_on_a_container_key_opens_only_its_ancestors`. Before that: `search_reveals_a_match_hidden_inside_a_collapsed_section` (Markdown) and the structured counterpart leaving unrelated folds collapsed; manual `zM` then `/` opening exactly the ancestor path. |
+| AC-10 | Path orientation works | **Fixed after audit, awaiting re-audit** | `5483a7a`: `the_breadcrumb_disambiguates_keys_that_read_as_something_else`, `keys_are_quoted_where_bare_they_would_mislead`. Before that: `document/path.rs` tests (keys with separators, indices, duplicates, multi-document roots); `render/terminal.rs` breadcrumb tests; manual live breadcrumb `spec › template › spec › containers › [0] › image`. |
 | AC-11 | Outline works | **Verified** | `app/toc.rs` tests, `document/outline.rs`, the `structured_fixtures` outline sweep; manual `t` on YAML showing the complete tree with previews and jumping. |
 | AC-12 | YAML comments survive | **Verified** | Attachment tests above/beside/trailing/first-inside-a-mapping (D23), `MatchField::Comment` search, `a_comment_collapses_with_the_subtree_it_belongs_to`, `a_comment_after_the_last_entry_is_still_drawn` (D19); `comments-yaml` snapshots at two widths; manual rendering. |
 | AC-13 | YAML aliases are safe | **Verified** | `an_alias_to_a_container_stays_a_single_node`; `tests/fixtures/anchors.yaml`; manual 12-level alias bomb: 0.01 s, 4.6 MB. |
 | AC-14 | YAML metadata survives | **Verified** | Anchor, alias, merge-key, tag, directive and multi-document tests; `anchors_aliases_tags_and_merge_keys_are_all_visible`; block headers kept as written, including chomping (§5); `anchors-yaml`, `block-scalars-yaml` and `multi-document-yaml` snapshots; manual rendering of all six. |
 | AC-15 | Source order survives | **Verified** | `duplicate-keys.json` kept in source order (D9); ordering assertions in the JSON and YAML suites; manual `{"x":1,"a":2,"x":3}`. |
 | AC-16 | Non-interactive mode is useful | **Verified** | `tests/cli_integration.rs` piping tests, including a structured document surviving a closed pipe; `plain_output_matches_the_render_snapshots_byte_for_byte`; manual `diple api.json \| head`, deterministic, fully expanded, no ANSI. |
-| AC-17 | Parse errors are useful | **Verified** | `document/error.rs` tests; invalid fixtures asserting an in-range 1-based line/column and a caret; `an_invalid_structured_document_reports_and_exits_non_zero` and `a_guess_that_does_not_parse_falls_back_to_markdown` at the command line; a regression test for the carriage-return position defect fuzzing found (§5); manual invalid JSON and YAML with exit 1 and no panic. |
-| AC-18 | No terminal injection | **Verified** | `util/text.rs` tests (D14); `path.rs`'s hostile-key test (D21); the `structured_layout` fuzz target asserts no rendered span contains ESC, a C0 control or a bidi override, across 129k executions; `no_structured_fixture_leaks_an_escape` at the command line; manual ESC/OSC/BEL/CR document emits none, in the document or the status line. Fuzzing found and closed one breach here — see §5. |
+| AC-17 | Parse errors are useful | **Fixed after audit, awaiting re-audit** | `71d1c84`: truncated anonymous input is an error (D12), `truncated_structured_input_is_an_error`, `structured_input_cut_short_is_an_error`; `0af2963`: `:open` reports on one line. Before that: `document/error.rs` tests; invalid fixtures asserting an in-range 1-based line/column and a caret; `an_invalid_structured_document_reports_and_exits_non_zero` and `a_guess_that_does_not_parse_falls_back_to_markdown` at the command line; a regression test for the carriage-return position defect fuzzing found (§5); manual invalid JSON and YAML with exit 1 and no panic. |
+| AC-18 | No terminal injection | **Fixed after audit, awaiting re-audit** | `fb90aba`: `markdown_text_cannot_carry_terminal_controls`, the Markdown `layout` fuzz target now asserts §23.4 with a seed carrying escapes in every construct, and the OSC 8 injection replayed in a pseudo-terminal is clean. Before that: `util/text.rs` tests (D14); `path.rs`'s hostile-key test (D21); the `structured_layout` fuzz target asserts no rendered span contains ESC, a C0 control or a bidi override, across 129k executions; `no_structured_fixture_leaks_an_escape` at the command line; manual ESC/OSC/BEL/CR document emits none, in the document or the status line. Fuzzing found and closed one breach here — see §5. |
 | AC-19 | Tabs and splits are format-independent | **Verified** | `app/workspace.rs` tests; manual `:open side-by-side` with Markdown left and YAML right, `Ctrl-W` moving focus. |
-| AC-20 | Help is context-aware | **Verified** | `app/hints.rs` capability-driven group tests; `:help` settings registry test; `--help` and the man page list the new flags and actions. |
+| AC-20 | Help is context-aware | **Verified** | `e4dd82e`: `?` is filtered by capabilities (`help_offers_only_what_the_document_can_do`) — until then only the key hints were; `app/hints.rs` capability-driven group tests; `:help` settings registry test; `--help` and the man page list the new flags and actions. |
 | AC-21 | Packaging is complete | **Verified** | `Cargo.toml` 2.0.0 with the new description and five keywords; Debian/RPM/Arch metadata; README, `docs/configuration.md`, `docs/keybindings.md`, troubleshooting, `CHANGELOG.md` 2.0.0; man page lints with 0 warnings and documents `H`/`L`; completions include the new flags. |
 | AC-22 | Tests and fuzzing cover the new parsers | **Verified** | Unit suites for JSON, YAML, the structured model, paths, folds, the outline and detection; the structured integration corpus; six new fuzz targets (`format_detect`, `json_model`, `yaml_model`, `structured_layout`, `structured_path`, `fold_reveal`), built, seeded and smoke-run. |
 | AC-23 | Future PDF is not architecturally blocked | **Verified (by design review)** | The application layer asks `DocumentCapabilities`, never "give me the tree": `DocumentModel` exposes `capabilities()`, `outline()`, `path()`, `fold_at()`, `next_structural()` and friends, and the key hints and help omit what a format cannot do. `capabilities.rs` already carries `pages` and `source_view`, unused by all three current backends. Adding a paged, partially hierarchical backend is one new enum variant plus its capability set; no app, tab, split, search, outline or terminal ownership changes. This is a structural criterion, so the evidence is the interface and its capability tests, not a PDF backend. |
 
-No mandatory criterion is unverified.
+Four mandatory criteria wait for the second audit (see "Resuming" above);
+every other criterion was independently VERIFIED on 2026-09-24.
 
 Three criteria needed substantial remediation rather than merely confirming:
 **AC-18**, where fuzzing found a real escape-injection path through the status
@@ -610,9 +597,16 @@ Out of scope for 2.0, recorded so nobody mistakes them for oversights.
   content lines render one column further right than the source, because the
   parser hands back the extra leading spaces as content and the layout adds
   its own indent on top.
-* **Sanitisation costs about 16 % on a ten-megabyte Markdown document**
-  against 1.2.0 (§6). It is what AC-18 requires and is invisible at any size
-  a reader actually opens.
+* **Two more wall-clock assertions** remain from 1.x, with generous budgets:
+  `app/state/layout_cache.rs` (50 ms per relayout) and
+  `document/markdown/anchors.rs` (500 ms). Neither has been seen to flake;
+  both are candidates for the same treatment as `layout::tests::deterministic`.
+* **What a PDF backend would still have to change** (the audit's AC-23
+  caveats, none a blocker): `SourceDocument` is UTF-8 text and `main.rs`
+  decodes lossily, so a binary format needs a byte-level source; link
+  following goes through `as_markdown()`; layout is dispatched per
+  `DocumentModel` variant. All three are loader- or layout-level, not changes
+  to the app, tab, split or search code.
 
 ---
 
