@@ -492,10 +492,23 @@ That table predates `2d87517`, and its explanation — sanitisation — was wron
 the audit measured the slowdown with Markdown text not sanitised at all. The
 cost was the Markdown search index, built eagerly at parse time (190 ms →
 370 ms and about 100 MB more on 10 MB) although piped output never searches.
-It is built on first use now. Re-measured with `hyperfine` on 2026-09-24,
-after the AC-18 fix added Markdown sanitising: 10 MB 1.53 s ± 0.03 against
-1.2.0's 1.59 s ± 0.29, 1 MB 158 ms ± 10 against 151 ms ± 2, same peak memory —
-within noise, with the sanitising measured separately at about 2 %.
+It is built on first use now.
+
+*Corrected after the third audit*, which measured +7–8 %: an earlier claim
+here of "within noise" rested on one noisy 1.2.0 run. Re-measured at
+`6ea8a87` plus the width and sanitising fast paths, `hyperfine`, 15–30 runs,
+Markdown to a pipe with `--color never`:
+
+| Markdown | 1.2.0 | 2.0.0 |
+| --- | --- | --- |
+| 1 MB | 152.5 ms ± 3.2 | 159.7 ms ± 4.5 (+5 %) |
+| 10 MB | 1.50 s ± 0.04 (user 1.35 s) | 1.68 s ± 0.25 (user 1.52 s, +12 %) |
+
+Parsing and output are level with 1.2.0; the difference is layout. Sampling
+it under `gdb` (perf is unavailable here) shows no single hotspot: about half
+is the AC-18 sanitising of Markdown spans and a replaced character's width,
+the rest is spread across the format-neutral layout. Peak memory is equal. At
+sizes a reader opens interactively the difference is a few milliseconds.
 
 And the three formats are in the same class as each other on an 11 MB
 document: Markdown 3.1 s / 490 MB, YAML 3.2 s / 722 MB, JSON 4.4 s /

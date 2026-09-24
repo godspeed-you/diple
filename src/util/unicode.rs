@@ -36,9 +36,12 @@ pub fn grapheme_width(cluster: &str) -> usize {
         if c == VS15 {
             continue;
         }
-        w += match crate::util::text::replacement(c) {
-            Some(_) => 1,
-            None => UnicodeWidthChar::width(c).unwrap_or(0),
+        // `unicode-width` has no width for a control, and zero for the bidi
+        // marks and NUL; only that rare zero case needs the full check.
+        w += match UnicodeWidthChar::width(c) {
+            None => 1,
+            Some(0) if crate::util::text::replacement(c).is_some() => 1,
+            Some(w) => w,
         };
     }
     w

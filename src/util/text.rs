@@ -29,13 +29,28 @@ pub const REPLACEMENT: char = '\u{fffd}';
 
 /// Whether `text` contains anything the terminal must not see verbatim.
 ///
-/// The fast path: almost every span is clean, and a byte scan settles it
-/// without allocating. Only the bidi controls need the character scan, and
-/// they all start with the same two lead bytes.
+/// One pass over the bytes, matching the UTF-8 encodings of the unsafe
+/// characters exactly: C0 and DEL are single bytes, C1 is `C2 80..9F`, and
+/// the bidi controls are `E2 80 8E/8F`, `E2 80 AA..AE` and `E2 81 A6..A9`.
+/// Testing the lead bytes alone sent every em dash and curly quote (`E2`)
+/// to a character scan.
 pub fn needs_sanitizing(text: &str) -> bool {
-    text.bytes()
-        .any(|b| b < 0x20 || b == 0x7f || b == 0xc2 || b == 0xe2)
-        && text.chars().any(is_unsafe)
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            0x00..=0x1f | 0x7f => return true,
+            0xc2 if matches!(b.get(i + 1), Some(0x80..=0x9f)) => return true,
+            0xe2 => match (b.get(i + 1), b.get(i + 2)) {
+                (Some(0x80), Some(0x8e | 0x8f | 0xaa..=0xae)) => return true,
+                (Some(0x81), Some(0xa6..=0xa9)) => return true,
+                _ => {}
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Whether a character must not reach the terminal as itself.
@@ -82,6 +97,22 @@ pub fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The byte scan and the character predicate must agree on every
+    /// character, or something unsafe gets through the fast path.
+    #[test]
+    fn the_byte_scan_agrees_with_the_character_predicate() {
+        for c in (0u32..0x3000).filter_map(char::from_u32) {
+            let text = format!("a{c}b");
+            assert_eq!(
+                needs_sanitizing(&text),
+                is_unsafe(c),
+                "{c:?} U+{:04X}",
+                c as u32
+            );
+        }
+        assert!(!needs_sanitizing("— ’ … “quoted”"));
+    }
 
     #[test]
     fn ordinary_text_is_borrowed_unchanged() {
