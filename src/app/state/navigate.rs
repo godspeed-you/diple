@@ -241,6 +241,7 @@ impl App {
         self.search.saved = self.search.committed.clone();
         self.search.query.clear();
         self.search_folds = Some(self.folds.clone());
+        self.search_origin = Some((self.anchor, self.cursor));
         self.mode = Mode::Search;
         self.refresh_search_preview();
     }
@@ -264,6 +265,19 @@ impl App {
         match tops.iter().collect::<Vec<_>>().as_slice() {
             [top] => self.after_one_fold(**top),
             _ => self.after_fold_change(),
+        }
+    }
+
+    /// Leave the search prompt as if it had not been opened: the folds, the
+    /// screen and the cursor go back to where they were. For `Esc`, and for
+    /// `Enter` on a query that found nothing.
+    pub(super) fn abandon_search_preview(&mut self) {
+        self.restore_search_folds();
+        self.search_folds = None;
+        if let Some((anchor, cursor)) = self.search_origin.take() {
+            self.anchor = anchor;
+            self.cursor = cursor;
+            self.restore_anchor();
         }
     }
 
@@ -709,6 +723,24 @@ mod tests {
         assert_ne!(a.folds, collapsed);
         code(&mut a, KeyCode::Esc);
         assert_eq!(a.folds, collapsed);
+    }
+
+    /// A cancelled search leaves the reader where they were, cursor and all.
+    #[test]
+    fn cancelling_a_search_keeps_the_cursor_where_it_was() {
+        let mut a = crate::testing::json_app(
+            r#"{"meta": {"namespace": "n"}, "spec": {"y": 2}, "status": {"conditions": [1]}}"#,
+        );
+        a.apply(Action::CollapseAll);
+        type_search(&mut a, "cond");
+        code(&mut a, KeyCode::Enter);
+        let before = (a.cursor_node(), a.top_line());
+        type_search(&mut a, "namesp");
+        code(&mut a, KeyCode::Esc);
+        assert_eq!((a.cursor_node(), a.top_line()), before);
+        type_search(&mut a, "nothing matches this");
+        code(&mut a, KeyCode::Enter);
+        assert_eq!((a.cursor_node(), a.top_line()), before);
     }
 
     /// AC-09: a match on a container's own key is visible with the container

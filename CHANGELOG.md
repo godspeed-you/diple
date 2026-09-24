@@ -132,6 +132,9 @@ every key, every setting and every behaviour it had in 1.2.
   put back before each new preview and when the search is cancelled. A match
   on a container's own key no longer opens that container either: its key row
   is visible while it is collapsed, so only its ancestors open.
+  Cancelling with `Esc`, or pressing `Enter` on a query that matched nothing,
+  now also puts the screen and the cursor back where they were — in 1.x the
+  view stayed wherever the preview had last scrolled.
 
 - **A key that would read as something else is quoted**, in the document and
   in the path alike. `{"a: b": "c"}` showed `a: b: "c"`, an empty key showed

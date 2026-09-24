@@ -163,6 +163,9 @@ pub struct App {
     /// reveals each match it passes through; only the one the reader accepts
     /// with `Enter` may keep its path open (spec AC-09).
     pub(crate) search_folds: Option<FoldState>,
+    /// The viewport anchor and the cursor when the search prompt opened, for
+    /// a search that is cancelled or finds nothing to put them back.
+    pub(crate) search_origin: Option<((NodeId, usize), NodeId)>,
     pub(crate) command: CommandState,
     /// TOC sidebar state.
     pub(crate) toc: TocState,
@@ -267,6 +270,7 @@ impl App {
             diagrams,
             search: SearchState::default(),
             search_folds: None,
+            search_origin: None,
             command: CommandState::default(),
             toc,
             hints,
