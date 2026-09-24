@@ -38,7 +38,11 @@ pub fn preview(value: &str) -> String {
     let mut flat = String::with_capacity(value.len().min(PREVIEW_LIMIT * 2));
     let mut space = false;
     for ch in value.chars() {
-        if ch.is_whitespace() {
+        // Only the whitespace a reader can see collapses. U+0085 counts as
+        // whitespace to Rust but is a C1 control, shown as U+FFFD like the
+        // others; a zero-width character is shown escaped, as the document
+        // shows it inside quotes.
+        if matches!(ch, ' ' | '\t' | '\n' | '\r') {
             space = !flat.is_empty();
             continue;
         }
@@ -46,7 +50,11 @@ pub fn preview(value: &str) -> String {
             flat.push(' ');
             space = false;
         }
-        flat.push(ch);
+        if crate::document::path::is_invisible(ch) {
+            flat.push_str(&format!("\\u{:04x}", ch as u32));
+        } else {
+            flat.push(ch);
+        }
         if crate::util::unicode::width(&flat) > PREVIEW_LIMIT {
             break;
         }
@@ -64,6 +72,12 @@ mod tests {
         assert_eq!(preview("echo hello\necho world"), "echo hello echo world");
         assert_eq!(preview("   padded   "), "padded");
         assert_eq!(preview(""), "");
+        assert_eq!(preview("z\u{200b}w"), "z\\u200bw");
+        assert_eq!(
+            preview("\u{85}x"),
+            "\u{85}x",
+            "a C1 control is not trimmed away"
+        );
         let long = "x".repeat(200);
         let short = preview(&long);
         assert!(crate::util::unicode::width(&short) <= PREVIEW_LIMIT);

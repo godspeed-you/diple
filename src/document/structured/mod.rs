@@ -127,7 +127,7 @@ impl StructuredDocument {
         let Some(node) = self.node(id) else {
             return String::new();
         };
-        let label = self.label(id);
+        let label = self.outline_label(id);
         match &node.kind {
             StructuredNodeKind::Mapping | StructuredNodeKind::Sequence => label,
             StructuredNodeKind::Alias { name } => format!("{label}: *{name}"),
@@ -288,6 +288,17 @@ mod tests {
         assert_eq!(d.previous_sibling_or_parent(6), Some(4));
         assert_eq!(d.previous_sibling_or_parent(5), Some(4), "up to [0]");
         assert_eq!(d.previous_sibling_or_parent(0), None);
+    }
+
+    #[test]
+    fn the_outline_quotes_a_key_where_the_path_does() {
+        let source = SourceDocument::new("t.json", r#"{"a\u200bb": 1, "x › y": [], "plain": "v"}"#);
+        let d = crate::document::json::parse(&source).unwrap();
+        let texts: Vec<String> = d.outline().into_iter().map(|e| e.text).collect();
+        assert_eq!(
+            texts,
+            ["root", r#""a\u200bb": 1"#, r#""x › y""#, r#"plain: "v""#]
+        );
     }
 
     #[test]

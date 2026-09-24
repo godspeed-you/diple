@@ -672,19 +672,7 @@ impl StructuredDocument {
                     }
                 }
                 NodeRelation::MappingEntry { key } => {
-                    let name = key.name().to_string();
-                    let passes_for_another_scalar = self.kind == DocumentKind::Yaml
-                        && matches!(
-                            key.style,
-                            ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
-                        )
-                        && crate::document::yaml::resolve_kind(&name, ScalarStyle::Plain)
-                            != ScalarKind::String;
-                    segments.push(if passes_for_another_scalar {
-                        PathSegment::QuotedKey(name)
-                    } else {
-                        PathSegment::Key(name)
-                    });
+                    segments.push(self.key_segment(key));
                 }
                 NodeRelation::SequenceItem { index } => {
                     segments.push(PathSegment::Index(*index));
@@ -734,6 +722,36 @@ impl StructuredDocument {
             return false;
         };
         node.parent.is_some() || self.shows_root_row() || !node.kind.is_container()
+    }
+
+    /// The path segment a key contributes: quoted when the source quoted a
+    /// YAML key that bare would be another scalar (`"null":`).
+    fn key_segment(&self, key: &StructuredKey) -> PathSegment {
+        let name = key.name().to_string();
+        let passes_for_another_scalar = self.kind == DocumentKind::Yaml
+            && matches!(
+                key.style,
+                ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+            )
+            && crate::document::yaml::resolve_kind(&name, ScalarStyle::Plain) != ScalarKind::String;
+        if passes_for_another_scalar {
+            PathSegment::QuotedKey(name)
+        } else {
+            PathSegment::Key(name)
+        }
+    }
+
+    /// A node's name as the outline shows it: a key quoted and escaped where
+    /// the path would quote it, so a key with a zero-width character or a
+    /// separator in it reads the same in both places.
+    pub fn outline_label(&self, id: NodeId) -> String {
+        match self.node(id).map(|n| &n.relation) {
+            Some(NodeRelation::MappingEntry { key }) if !key.complex => {
+                let prefix = &key.text[..key.text.len() - key.name().len()];
+                format!("{prefix}{}", self.key_segment(key).label())
+            }
+            _ => self.label(id),
+        }
     }
 
     /// The label shown for a node's key or index, without its value.
