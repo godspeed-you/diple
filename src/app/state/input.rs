@@ -103,6 +103,8 @@ impl App {
         use crossterm::event::KeyCode;
         match event.code {
             KeyCode::Esc => {
+                self.restore_search_folds();
+                self.search_folds = None;
                 self.search.query = self.search.saved.clone();
                 self.search.refresh(self.doc.search_index());
                 self.mode = Mode::Normal;
@@ -110,6 +112,7 @@ impl App {
             }
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
+                self.search_folds = None;
                 if self.search.has_matches() {
                     self.goto_current_match();
                 } else if !self.search.query.is_empty() {

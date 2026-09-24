@@ -118,6 +118,14 @@ every key, every setting and every behaviour it had in 1.2.
   C1 characters and bidirectional overrides are drawn as `U+FFFD`, in the
   pager and in piped output alike. 1.x behaved the same way.
 
+- **A search opens only the path to the match it lands on.** The prompt
+  searches as you type and revealed every match it passed through on the way,
+  so `/spec` in a collapsed Kubernetes manifest left `metadata` open because
+  `sp` had matched `namespace` — and `Esc` left it open too. The folds are now
+  put back before each new preview and when the search is cancelled. A match
+  on a container's own key no longer opens that container either: its key row
+  is visible while it is collapsed, so only its ancestors open.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

@@ -235,13 +235,39 @@ impl App {
     pub(super) fn open_search(&mut self) {
         self.search.saved = self.search.committed.clone();
         self.search.query.clear();
+        self.search_folds = Some(self.folds.clone());
         self.mode = Mode::Search;
         self.refresh_search_preview();
+    }
+
+    /// Put the folds back the way they were when the search prompt opened,
+    /// closing whatever the preview revealed on its way.
+    pub(super) fn restore_search_folds(&mut self) {
+        let Some(before) = &self.search_folds else {
+            return;
+        };
+        if self.folds == *before {
+            return;
+        }
+        // The preview reveals one match at a time and is restored before the
+        // next, so what differs is normally one ancestor chain: one splice.
+        let tops: std::collections::BTreeSet<FoldId> = (0..self.folds.len())
+            .filter(|&f| self.folds.is_collapsed(f) != before.is_collapsed(f))
+            .map(|f| self.doc.outermost_fold(f))
+            .collect();
+        self.folds = before.clone();
+        match tops.iter().collect::<Vec<_>>().as_slice() {
+            [top] => self.after_one_fold(**top),
+            _ => self.after_fold_change(),
+        }
     }
 
     /// Incremental search: refresh matches and preview the first one at or
     /// after the current position.
     pub(super) fn refresh_search_preview(&mut self) {
+        // A prefix of the query may have matched somewhere the full query
+        // does not; what it opened is not the reader's to keep.
+        self.restore_search_folds();
         self.search.refresh(self.doc.search_index());
         // No `invalidate()`: the query is not a layout input any more, so an
         // incremental search never rebuilds the document.
@@ -605,6 +631,68 @@ mod tests {
         assert!(text.contains("needle"), "the section was revealed");
         let m = a.search.current_match().expect("a current match");
         assert!(!a.doc.is_hidden(m.node, &a.folds));
+    }
+
+    fn type_search(a: &mut App, query: &str) {
+        key(a, '/');
+        for c in query.chars() {
+            key(a, c);
+        }
+    }
+
+    /// AC-09: the preview reveals each match it passes through, but only the
+    /// accepted one keeps its path open. `s` matches inside `meta`; `spec`
+    /// is a top-level key and needs nothing opened.
+    #[test]
+    fn a_search_keeps_only_the_folds_its_accepted_match_needs() {
+        let mut a = crate::testing::json_app(r#"{"meta": {"namespace": "n"}, "spec": {"y": 2}}"#);
+        a.apply(Action::CollapseAll);
+        let collapsed = a.folds.clone();
+
+        type_search(&mut a, "s");
+        assert_ne!(a.folds, collapsed, "the preview of `s` opened `meta`");
+        for c in "pec".chars() {
+            key(&mut a, c);
+        }
+        code(&mut a, KeyCode::Enter);
+        assert_eq!(a.folds, collapsed, "`meta` closed again");
+        assert_eq!(a.tree().to_plain_text(), {
+            let mut b =
+                crate::testing::json_app(r#"{"meta": {"namespace": "n"}, "spec": {"y": 2}}"#);
+            b.apply(Action::CollapseAll);
+            b.tree().to_plain_text()
+        });
+    }
+
+    #[test]
+    fn cancelling_a_search_closes_what_its_preview_opened() {
+        let mut a = crate::testing::json_app(r#"{"meta": {"namespace": "n"}, "spec": {"y": 2}}"#);
+        a.apply(Action::CollapseAll);
+        let collapsed = a.folds.clone();
+        type_search(&mut a, "name");
+        assert_ne!(a.folds, collapsed);
+        code(&mut a, KeyCode::Esc);
+        assert_eq!(a.folds, collapsed);
+    }
+
+    /// AC-09: a match on a container's own key is visible with the container
+    /// collapsed, so only its ancestors open — whether the match was hidden
+    /// or not.
+    #[test]
+    fn a_match_on_a_container_key_opens_only_its_ancestors() {
+        let mut a = crate::testing::json_app(
+            r#"{"zz": {"q": 1}, "outer": {"zz": {"inner": 1, "more": {"x": 2}}}}"#,
+        );
+        a.apply(Action::CollapseAll);
+        type_search(&mut a, "zz");
+        code(&mut a, KeyCode::Enter);
+        a.apply(Action::NextSearch);
+        let m = a.search.current_match().expect("the nested match");
+        assert!(!a.doc.is_hidden(m.node, &a.folds), "the match is visible");
+        let own = a.doc.fold_at(m.node).expect("a container");
+        assert!(a.folds.is_collapsed(own), "`outer.zz` itself stayed closed");
+        let parent = a.folds.parent(own).expect("inside `outer`");
+        assert!(!a.folds.is_collapsed(parent), "`outer` was opened");
     }
 
     #[test]

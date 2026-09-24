@@ -159,6 +159,10 @@ pub struct App {
     pub(crate) diagrams: DiagramProvider,
     /// Search prompt and result set.
     pub(crate) search: SearchState,
+    /// The folds as they were when the search prompt opened. The preview
+    /// reveals each match it passes through; only the one the reader accepts
+    /// with `Enter` may keep its path open (spec AC-09).
+    pub(crate) search_folds: Option<FoldState>,
     pub(crate) command: CommandState,
     /// TOC sidebar state.
     pub(crate) toc: TocState,
@@ -256,6 +260,7 @@ impl App {
             color,
             diagrams,
             search: SearchState::default(),
+            search_folds: None,
             command: CommandState::default(),
             toc,
             hints,

@@ -197,8 +197,18 @@ impl DocumentModel {
 
     /// Expand every collapsed ancestor of `node` so its row becomes visible.
     /// Returns the fold whose subtree changed, if any.
+    ///
+    /// A container's key row stays visible while the container is collapsed,
+    /// so revealing the container opens only what encloses it (spec AC-09).
+    /// A Markdown heading keeps 1.x behaviour and opens its own section as
+    /// well.
     pub fn reveal(&self, node: NodeId, folds: &mut FoldState) -> Option<FoldId> {
-        let fold = self.fold_at(node)?;
+        let mut fold = self.fold_at(node)?;
+        if let DocumentModel::Structured(_) = self {
+            if self.fold_node(fold) == Some(node) {
+                fold = folds.parent(fold)?;
+            }
+        }
         folds.reveal(fold);
         Some(fold)
     }
