@@ -642,11 +642,31 @@ impl<'a> Loader<'a> {
 /// suffix, so `!!timestamp` and `!MyType` read back the way they were typed.
 /// A verbatim tag has no handle and keeps its `!<…>`, without which
 /// `!<tag:x> v` would read as the plain text `tag:x v`.
+///
+/// The parser decodes `%XX` escapes in the suffix; a decoded character that
+/// cannot be shown as itself (a control, a bidi override, a space) is written
+/// back as the escape the source used, so `!t%1b%07tag` reads as typed.
 fn tag_text(tag: &granit_parser::Tag) -> String {
+    let suffix = reencode_tag(tag.suffix());
     if tag.original_handle().is_empty() {
-        return format!("!<{}{}>", tag.handle(), tag.suffix());
+        return format!("!<{}{suffix}>", tag.handle());
     }
-    format!("{}{}", tag.original_handle(), tag.suffix())
+    format!("{}{suffix}", tag.original_handle())
+}
+
+fn reencode_tag(suffix: &str) -> String {
+    let mut out = String::with_capacity(suffix.len());
+    for c in suffix.chars() {
+        if crate::util::text::replacement(c).is_some() || c.is_whitespace() {
+            let mut buf = [0u8; 4];
+            for byte in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The type a YAML core-schema tag forces, if it is one.
@@ -662,7 +682,7 @@ fn core_schema_kind(tag: &granit_parser::Tag) -> Option<ScalarKind> {
 
 /// YAML 1.2 core-schema resolution for a plain scalar. Anything quoted or
 /// written as a block is a string whatever it looks like.
-fn resolve_kind(value: &str, style: ScalarStyle) -> ScalarKind {
+pub(crate) fn resolve_kind(value: &str, style: ScalarStyle) -> ScalarKind {
     if style != ScalarStyle::Plain {
         return ScalarKind::String;
     }
@@ -1527,6 +1547,27 @@ mod tests {
             let report = error.report();
             assert!(report.starts_with("YAML parse error\n"), "{report}");
         }
+    }
+
+    #[test]
+    fn a_percent_encoded_tag_reads_back_encoded() {
+        let d = parse(&SourceDocument::new("t.yaml", "a: !t%1b%07tag x\n")).unwrap();
+        assert_eq!(d.node(1).and_then(|n| n.tag()), Some("!t%1B%07tag"));
+    }
+
+    /// A quoted key that bare would be another scalar keeps its quotes in the
+    /// path, so `"null":` and `null:` do not share a breadcrumb.
+    #[test]
+    fn a_quoted_key_that_would_be_another_scalar_keeps_its_quotes_in_the_path() {
+        let d = parse(&SourceDocument::new(
+            "t.yaml",
+            "\"null\": 1\nnull: 2\n'1': 3\n1: 4\n\"plain\": 5\n",
+        ))
+        .unwrap();
+        let crumbs: Vec<String> = (1..d.node_count())
+            .map(|n| d.path(n).breadcrumb(false))
+            .collect();
+        assert_eq!(crumbs, [r#""null""#, "null", r#""1""#, "1", "plain"]);
     }
 
     // ---- detection -------------------------------------------------------

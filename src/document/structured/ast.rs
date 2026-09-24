@@ -672,7 +672,19 @@ impl StructuredDocument {
                     }
                 }
                 NodeRelation::MappingEntry { key } => {
-                    segments.push(PathSegment::Key(key.name().to_string()));
+                    let name = key.name().to_string();
+                    let passes_for_another_scalar = self.kind == DocumentKind::Yaml
+                        && matches!(
+                            key.style,
+                            ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+                        )
+                        && crate::document::yaml::resolve_kind(&name, ScalarStyle::Plain)
+                            != ScalarKind::String;
+                    segments.push(if passes_for_another_scalar {
+                        PathSegment::QuotedKey(name)
+                    } else {
+                        PathSegment::Key(name)
+                    });
                 }
                 NodeRelation::SequenceItem { index } => {
                     segments.push(PathSegment::Index(*index));

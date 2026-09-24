@@ -114,6 +114,10 @@ every key, every setting and every behaviour it had in 1.2.
   where 1.x placed it one row lower. Every way of going to a heading now
   lands in the same place.
 
+- In Markdown output a tab inside a paragraph or a table cell, and a line
+  break inside inline HTML, now read as a space; 1.x dropped them, running the
+  words on either side together. Both follow from the sanitising below.
+
 ### Fixed
 
 - **A Markdown document can no longer send escape sequences to the
@@ -143,6 +147,11 @@ every key, every setting and every behaviour it had in 1.2.
   whether `[0]` was an index or a key. Such keys are now shown quoted and
   escaped — `"a: b": "c"`, `"x › y"`, `"[0]"` — while `metadata:` stays as it
   is. A YAML key keeps the quotes its source gave it.
+  The same goes for a key with a quote in it, one that starts with a brace
+  (`"{}"` is not an empty object), and one holding a zero-width character,
+  which is shown escaped (`\u200b`) inside quotes rather than invisibly. A
+  YAML key the source quoted because bare it would be another scalar —
+  `"null":`, `"1":` — keeps its quotes in the path too.
 
 - **Piped JSON or YAML that was cut short or broken is an error, not
   Markdown.** `curl … | diple` on a response that ended early showed the
@@ -161,6 +170,9 @@ every key, every setting and every behaviour it had in 1.2.
   document's root ran into its `--- Document N` label, and `!!int "42"` lost
   its quotes. The outline's previews now quote a string where the document
   does, so the string `"3"` no longer passes for the number `3` there.
+  The outline shows `U+FFFD` for a character it cannot print, as the document
+  does, rather than dropping it, and a percent-encoded control in a tag reads
+  back as the escape the source wrote.
 
 - **`:open` reports a document that does not parse on one line** —
   `YAML parse error at bad.yaml:2:8: unclosed quote` — instead of squashing

@@ -12,6 +12,10 @@ use std::fmt;
 pub enum PathSegment {
     /// A mapping/object key.
     Key(String),
+    /// A YAML key the source quoted because bare it would be another scalar:
+    /// `"null":` or `"1":`, which the breadcrumb must not show as the null
+    /// key or the integer key it would otherwise read as.
+    QuotedKey(String),
     /// A sequence/array index.
     Index(usize),
     /// A document within a multi-document stream (1-based, as YAML readers
@@ -41,6 +45,7 @@ impl PathSegment {
             PathSegment::Key(key) if key_is_ambiguous(key) => {
                 crate::util::text::sanitize(&quote(key))
             }
+            PathSegment::QuotedKey(key) => crate::util::text::sanitize(&quote(key)),
             PathSegment::Key(key) => crate::util::text::sanitize(key),
             PathSegment::Index(i) => format!("[{i}]"),
             PathSegment::Document(n) => format!("Document {n}"),
@@ -55,11 +60,22 @@ fn key_is_ambiguous(key: &str) -> bool {
         || key.starts_with(char::is_whitespace)
         || key.ends_with(char::is_whitespace)
         || key.contains(['\u{203a}', '>', '"'])
-        || key.starts_with('[')
+        || key.starts_with(['[', '{'])
+        || key.chars().any(is_invisible)
         || key.starts_with("Document ")
         || key.starts_with('\u{2026}')
         || key.starts_with("...")
         || key.chars().any(|c| c.is_control())
+}
+
+/// Characters that take no room and show nothing — a zero-width space, a
+/// soft hyphen, a byte-order mark — so a key holding one looks like a key
+/// without it.
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}' | '\u{feff}'
+    )
 }
 
 /// A key as a JSON string literal: quoted, with quotes, backslashes and
@@ -74,7 +90,7 @@ fn quote(key: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c.is_control() || is_invisible(c) => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
     }
@@ -182,7 +198,7 @@ impl DocumentPath {
         for segment in &self.segments {
             match segment {
                 PathSegment::Document(n) => out.push_str(&format!("#{n}")),
-                PathSegment::Key(key) => {
+                PathSegment::Key(key) | PathSegment::QuotedKey(key) => {
                     out.push('/');
                     out.push_str(&key.replace('~', "~0").replace('/', "~1"));
                 }

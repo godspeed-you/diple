@@ -789,7 +789,7 @@ fn wrap_spans(
 /// A match that lands inside an escape sequence is widened to cover the whole
 /// sequence, because half of `\\n` is not a thing a reader can see.
 fn escape_quoted(text: &str, matches: Vec<Match>) -> (String, Vec<Match>) {
-    if !text.bytes().any(needs_escape) {
+    if !text.bytes().any(needs_escape) && !text.chars().any(crate::document::path::is_invisible) {
         return (text.to_string(), matches);
     }
     let mut out = String::with_capacity(text.len() + 8);
@@ -806,7 +806,12 @@ fn escape_quoted(text: &str, matches: Vec<Match>) -> (String, Vec<Match>) {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+            // A zero-width character inside quotes would be a difference
+            // the reader cannot see.
+            c if (c as u32) < 0x20
+                || c as u32 == 0x7f
+                || crate::document::path::is_invisible(c) =>
+            {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
@@ -886,7 +891,9 @@ fn key_quote(key: &crate::document::structured::StructuredKey, json: bool) -> Op
         || name.ends_with(':')
         || name.contains(": ")
         || name.contains(" #")
-        || name.starts_with(['[', '#', '&', '*', '!', '\'', '"'])
+        || name.starts_with(['[', '{', '#', '&', '*', '!', '\''])
+        || name.contains('"')
+        || name.chars().any(crate::document::path::is_invisible)
         || name == "-"
         || name.starts_with("- ")
         || name.chars().any(|c| c.is_control());
@@ -1263,7 +1270,7 @@ mod tests {
     fn keys_are_quoted_where_bare_they_would_mislead() {
         let json = rows(
             "t.json",
-            r#"{"a: b": "c", "": 1, "n\nl": 2, "[0]": 3, "plain": 4}"#,
+            r#"{"a: b": "c", "": 1, "n\nl": 2, "[0]": 3, "plain": 4, "x\"": 5, "{}": 6, "a\u200bb": 7}"#,
             None,
         );
         for row in [
@@ -1272,6 +1279,9 @@ mod tests {
             r#""n\nl": 2"#,
             r#""[0]": 3"#,
             "plain: 4",
+            r#""x\"": 5"#,
+            r#""{}": 6"#,
+            r#""a\u200bb": 7"#,
         ] {
             assert!(json.iter().any(|r| r.trim() == row), "{row} in {json:?}");
         }

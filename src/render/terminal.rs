@@ -383,7 +383,10 @@ impl TocSidebar<'_> {
                     " "
                 };
                 let prefix = connectors.get(i).cloned().unwrap_or_default();
-                let row = format!("{marker}{prefix}{}", e.text);
+                // Replaced rather than left to the backend, which drops
+                // controls silently: the outline shows `U+FFFD` where the
+                // document does (`util::text`).
+                let row = format!("{marker}{prefix}{}", crate::util::text::sanitized(&e.text));
                 let width = width.max(1);
                 // One column past the right edge, so a row that still has
                 // content out there is the one that gets the ellipsis; the
@@ -1111,6 +1114,14 @@ mod tests {
     /// A heading too long for the sidebar is reached by scrolling sideways,
     /// not by widening the sidebar. The ellipsis marks the edge it is scrolled
     /// towards, and disappears once the end of the text is on screen.
+    #[test]
+    fn an_outline_entry_shows_what_it_cannot_print() {
+        let theme = Theme::dark();
+        let entries = toc_entries(&[(0, "red\u{1b}[31m\u{202e}x")]);
+        let toc = toc_sidebar(&entries, &theme);
+        assert_eq!(toc.texts(40)[0], " red\u{fffd}[31m\u{fffd}x");
+    }
+
     #[test]
     fn toc_scrolls_sideways_past_the_sidebar_width() {
         let theme = Theme::dark();
