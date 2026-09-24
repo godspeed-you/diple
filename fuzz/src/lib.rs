@@ -505,7 +505,7 @@ pub fn format_detect(data: &[u8]) {
         _ => panic!("the same input parsed and failed to parse"),
     }
 
-    if let Ok(loaded) = first {
+    if let Ok(loaded) = &first {
         assert_eq!(
             loaded.model.kind(),
             loaded.format,
@@ -528,12 +528,16 @@ pub fn format_detect(data: &[u8]) {
         if let Some(doc) = loaded.model.as_structured() {
             check_model(doc);
         }
-    } else {
-        // Detection never fails: it falls back to Markdown. Only a stated
-        // format — from `--format` or from the filename — can error.
+    } else if let Err(error) = &first {
+        // Detection falls back to Markdown, with one exception: structured
+        // input that ran out inside a value is reported (spec §6.6). Only a
+        // stated format — from `--format` or from the filename — can error
+        // for any other reason.
+        let stated =
+            request.fixed().is_some() || diple::document::format::from_extension(name).is_some();
         assert!(
-            request.fixed().is_some() || diple::document::format::from_extension(name).is_some(),
-            "an unstated format must fall back rather than fail"
+            stated || (error.incomplete && error.format.is_structured()),
+            "an unstated format must fall back unless it was cut short: {error:?}"
         );
     }
 }
