@@ -159,10 +159,9 @@ every key, every setting and every behaviour it had in 1.2.
   the parse error a stated format gets, with a hint that `--format markdown`
   reads it as text, when it is:
   - JSON that runs out inside a value (`{"a": [1, 2`, `{"a": tr`), or that
-    breaks after a member name or a comma (`{"broken": }`);
-  - YAML that a stream detection would claim runs into, and that breaks where
-    the input ends: an unclosed quote or bracket, or a key half-written on
-    the last line.
+    breaks after an object's first member name (`{"broken": }`);
+  - YAML that a stream detection would claim runs into, and that the input
+    leaves inside an unclosed quote or bracket.
   Prose that merely fails to parse as either still opens as Markdown.
 
 - **YAML tags and quoted values read back as the source wrote them.** A

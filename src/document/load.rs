@@ -156,15 +156,15 @@ fn probably_yaml(source: &SourceDocument) -> bool {
 
 /// Whether a YAML parse failure is a YAML stream that was cut short: the
 /// lines before the failing one are a stream detection would claim, and the
-/// failure is where the input ends — an unclosed quote or bracket, or a break
-/// on the last line, which is where `head -c` or a dropped connection leaves
-/// a key half-written. Prose fails too (`'Tis the season` never closes its
+/// parser ran out inside an unclosed quote or bracket. Prose fails too (`'Tis the season` never closes its
 /// quote), which is why what came before has to be confidently YAML; an open
 /// flow collection needs only a mapping or sequence before it, because prose
 /// does not write `b: [1, 2`.
 fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> bool {
-    let at_the_end = error.incomplete || on_the_last_line(source, error);
-    if !at_the_end {
+    // Only a construct the parser saw left open. A break on the last line
+    // was tried as a signal too, and refused ordinary notes — `Name: Alice`
+    // over `Role: Admin` over a closing `Thanks!` — with exit 1.
+    if !error.incomplete {
         return false;
     }
     let Some(prefix) = lines_before(source, error) else {
@@ -181,15 +181,6 @@ fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> bool {
         }
         Err(_) => false,
     }
-}
-
-/// Whether an error points at the last line that has anything on it.
-fn on_the_last_line(source: &SourceDocument, error: &DocumentError) -> bool {
-    let Some(position) = error.position else {
-        return false;
-    };
-    let last = source.text().trim_end().lines().count().max(1);
-    position.line >= last
 }
 
 /// The source up to the start of the line an error points at.
@@ -345,6 +336,12 @@ mod tests {
             "'Tis the season\n",
             "\"Unfinished quote\n",
             "Note: this is important.\n\"And this",
+            // Key-value lines over a closing line of prose, and a bracketed
+            // title: notes and Markdown, not broken YAML or JSON.
+            "Name: Alice\nRole: Admin\n\nThanks!\n",
+            "# ADR 1\n\nStatus: Accepted\nDate: 2024-03-01\n\n## Context\n\nWe need X.\n",
+            "[2024, the year] in review\n",
+            "[1, Smith et al.] showed this.\n",
         ] {
             let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text))
                 .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));
@@ -378,7 +375,7 @@ mod tests {
     #[test]
     fn broken_json_that_committed_to_being_json_is_an_error() {
         let deep = format!("{}{}", "[".repeat(5000), "]".repeat(5000));
-        for text in [r#"{"broken": }"#, "[1, 2, oops]", deep.as_str()] {
+        for text in [r#"{"broken": }"#, r#"[{"a": 1}, oops]"#, deep.as_str()] {
             let error =
                 load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);
             assert_eq!(error.format, DocumentKind::Json);
@@ -400,11 +397,6 @@ mod tests {
             ("items:\n  - a\n  - b\nflow: {x: 1, y:", DocumentKind::Yaml),
             (r#"{"a": tr"#, DocumentKind::Json),
             ("a: 1\nb: [1, 2", DocumentKind::Yaml),
-            // Cut in the middle of a key, as `head -c` leaves it.
-            (
-                "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\nspec:\n  containers:\n  - image: nginx\n    nam",
-                DocumentKind::Yaml,
-            ),
         ] {
             let error =
                 load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);

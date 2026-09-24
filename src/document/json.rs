@@ -247,8 +247,9 @@ impl<'a> Parser<'a> {
                         return Err(self.expected("`,` or `}`"));
                     }
                     Frame::Array { next_index } => {
+                        // A comma inside `[…]` commits nothing: prose writes
+                        // `[1, Smith et al.] showed this`.
                         if self.eat(b',') {
-                            self.committed = true;
                             let index = next_index + 1;
                             if let Some(Frame::Array { next_index }) = self.frames.last_mut() {
                                 *next_index = index;

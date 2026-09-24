@@ -212,11 +212,13 @@ both parsers — is an error, because §6.6 names exactly that case. For YAML th
 lines before the open construct must also be a stream detection would have
 claimed, since prose opens quotes it never closes (`'Tis the season`).
 
-Widened after the second audit: a YAML break on the last line (a key cut in
-half) counts as running out; an unclosed flow collection needs only a
-collection before it; and JSON that fails after a member name, a comma, or
-at the depth limit is `DocumentError::committed` and reported as broken
-JSON. A large input is probed on its first 64 KiB before a full YAML parse.
+Widened after the second audit: an unclosed flow collection needs only a
+collection before it, and JSON that fails after an object member name or at
+the depth limit is `DocumentError::committed` and reported as broken JSON. A
+large input is probed on its first 64 KiB before a full YAML parse. Two
+further widenings — a YAML break on the last line, and a comma inside `[…]`
+— were removed again after the third audit: they refused ordinary notes
+(`Name: Alice` / `Role: Admin` / `Thanks!`) and bracketed titles with exit 1.
 
 ### D13 — search fields, not just nodes
 
