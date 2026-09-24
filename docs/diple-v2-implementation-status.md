@@ -12,7 +12,7 @@ the commit after it, on `main`, 2026-09-18
 **This section is the only part of this file that is about the future. Delete
 it when the item below is done.**
 
-### Three independent audits ran; fix, then audit a fourth time
+### Four independent audits ran; fix, then audit a fifth time
 
 **First audit** (2026-09-24, at `128fc52`): AC-09, AC-10, AC-17 and AC-18
 failed, plus smaller defects. Fixed in `fb90aba`..`34b6fa7`.
@@ -46,10 +46,16 @@ and multiple documents are no longer signals, and truncation is reported only
 where the parser saw a construct left open. Under that revised text, a cut
 that leaves parseable or prose-like YAML falls back to Markdown by design.
 
-**Run the audit a fourth time**, same brief, against the *revised* spec —
-pressing on AC-06/AC-01 on stdin, AC-05 (what realistic YAML is still
-detected), AC-17 as §6.6 now defines it, AC-22, and anything the last round
-of fixes could have broken.
+**Fourth audit** (2026-09-24, at `ea93971`, against the revised spec): no
+crashes in 616 targeted cases; AC-22 now VERIFIED. AC-06/AC-01 and AC-17
+still failed: an open bracket after a flat mapping refused prose with exit 1;
+`head -n` inside a multi-line quoted value fell back; an HTML entity or `!`
+at the start of a list item, a wrapped item with two colons, and an
+introduction over an indented example were detected as YAML. Fixed in
+`82ffc2b`; on the audit's 300k corpus windows no Markdown is now detected as
+YAML, and its realistic YAML set is detected exactly as before.
+
+**Run the audit a fifth time**, same brief, against the revised spec.
 
 Any mandatory criterion that is not VERIFIED means the release is not
 complete.
@@ -583,12 +589,12 @@ behaviour was exercised, not that the types exist.
 
 | AC | Requirement | State | Evidence |
 | --- | --- | --- | --- |
-| AC-01 | Markdown remains first-class | **Fixed after 3rd audit, awaiting re-audit** | 2nd audit: 8400 file/stdin comparisons byte-identical to 1.2.0 except stdin Markdown lists detected as YAML (fixed with AC-06) and two documented sanitising differences. Before that: `app/state/characterization.rs` (15 cross-cutting tests pinned before the refactor, all green); `tests/render_snapshots.rs` with unchanged committed snapshots; the Markdown unit suite; manual paging/search/outline/links/splits. One real regression was found and fixed (D18, §5). |
+| AC-01 | Markdown remains first-class | **Fixed after 4th audit, awaiting re-audit** | 2nd audit: 8400 file/stdin comparisons byte-identical to 1.2.0 except stdin Markdown lists detected as YAML (fixed with AC-06) and two documented sanitising differences. Before that: `app/state/characterization.rs` (15 cross-cutting tests pinned before the refactor, all green); `tests/render_snapshots.rs` with unchanged committed snapshots; the Markdown unit suite; manual paging/search/outline/links/splits. One real regression was found and fixed (D18, §5). |
 | AC-02 | JSON opens natively | **Verified** | `document/json.rs`, `layout/structured.rs`, `tests/structured_fixtures.rs`; manual `diple api.json` with folding, navigation and outline. |
 | AC-03 | JSON stdin auto-detects | **Verified** | `document/format.rs` + `load.rs` tests; `tests/cli_integration.rs`; manual `cat api.json \| diple`. |
 | AC-04 | YAML opens natively | **Verified** | `document/yaml.rs` (30 tests), `layout/structured.rs`, `tests/structured_fixtures.rs`; manual `diple k8s.yaml`. |
 | AC-05 | Common YAML pipelines work | **Verified** | D11 detection tests; manual `diple < detect.yaml` on `kubectl`-shaped nested mapping output, recognised without `--format`. |
-| AC-06 | Ambiguous text stays Markdown | **Fixed after 3rd audit, awaiting re-audit** | `9730cee`: `prose_and_markdown_stay_markdown` covers the audit's lists and prose. Before that: Detection tests for prose, a Markdown list, `title: hello`, a bare `42` and two sentence-valued lines such as `Q: why?` / `A: because.` (D11, `df27dc4`); `ambiguous_stdin_stays_markdown` at the command line; manual `printf -- '- one\n- two\n' \| diple` renders bullets, not a sequence. |
+| AC-06 | Ambiguous text stays Markdown | **Fixed after 4th audit, awaiting re-audit** | `9730cee`: `prose_and_markdown_stay_markdown` covers the audit's lists and prose. Before that: Detection tests for prose, a Markdown list, `title: hello`, a bare `42` and two sentence-valued lines such as `Q: why?` / `A: because.` (D11, `df27dc4`); `ambiguous_stdin_stays_markdown` at the command line; manual `printf -- '- one\n- two\n' \| diple` renders bullets, not a sequence. |
 | AC-07 | Explicit override works | **Verified** | `cli/args.rs` tests; `an_explicit_format_overrides_name_and_content`; manual `--format markdown config.yaml`, `--format yaml -`, `--format json file.data`. |
 | AC-08 | Folding is semantic | **Verified** | `folding_never_depends_on_the_width`; `folds_cover_the_containers_and_nothing_else`; `structured_fixtures` collapse/reveal sweep; manual resize with folds held. |
 | AC-09 | Search reveals hidden matches | **Verified (2nd audit)** | `88faa4c`: `a_search_keeps_only_the_folds_its_accepted_match_needs`, `cancelling_a_search_closes_what_its_preview_opened`, `a_match_on_a_container_key_opens_only_its_ancestors`. Before that: `search_reveals_a_match_hidden_inside_a_collapsed_section` (Markdown) and the structured counterpart leaving unrelated folds collapsed; manual `zM` then `/` opening exactly the ancestor path. |
@@ -599,7 +605,7 @@ behaviour was exercised, not that the types exist.
 | AC-14 | YAML metadata survives | **Verified** | Anchor, alias, merge-key, tag, directive and multi-document tests; `anchors_aliases_tags_and_merge_keys_are_all_visible`; block headers kept as written, including chomping (§5); `anchors-yaml`, `block-scalars-yaml` and `multi-document-yaml` snapshots; manual rendering of all six. |
 | AC-15 | Source order survives | **Verified** | `duplicate-keys.json` kept in source order (D9); ordering assertions in the JSON and YAML suites; manual `{"x":1,"a":2,"x":3}`. |
 | AC-16 | Non-interactive mode is useful | **Verified** | `tests/cli_integration.rs` piping tests, including a structured document surviving a closed pipe; `plain_output_matches_the_render_snapshots_byte_for_byte`; manual `diple api.json \| head`, deterministic, fully expanded, no ANSI. |
-| AC-17 | Parse errors are useful | **Fixed after 3rd audit, awaiting re-audit** | `9730cee`: the audit's truncation sweep now falls back only on cuts in the first line; `broken_json_that_committed_to_being_json_is_an_error`. Before that: `71d1c84`: truncated anonymous input is an error (D12), `truncated_structured_input_is_an_error`, `structured_input_cut_short_is_an_error`; `0af2963`: `:open` reports on one line. Before that: `document/error.rs` tests; invalid fixtures asserting an in-range 1-based line/column and a caret; `an_invalid_structured_document_reports_and_exits_non_zero` and `a_guess_that_does_not_parse_falls_back_to_markdown` at the command line; a regression test for the carriage-return position defect fuzzing found (§5); manual invalid JSON and YAML with exit 1 and no panic. |
+| AC-17 | Parse errors are useful | **Fixed after 4th audit, awaiting re-audit** | `9730cee`: the audit's truncation sweep now falls back only on cuts in the first line; `broken_json_that_committed_to_being_json_is_an_error`. Before that: `71d1c84`: truncated anonymous input is an error (D12), `truncated_structured_input_is_an_error`, `structured_input_cut_short_is_an_error`; `0af2963`: `:open` reports on one line. Before that: `document/error.rs` tests; invalid fixtures asserting an in-range 1-based line/column and a caret; `an_invalid_structured_document_reports_and_exits_non_zero` and `a_guess_that_does_not_parse_falls_back_to_markdown` at the command line; a regression test for the carriage-return position defect fuzzing found (§5); manual invalid JSON and YAML with exit 1 and no panic. |
 | AC-18 | No terminal injection | **Verified (2nd audit)** | `fb90aba`: `markdown_text_cannot_carry_terminal_controls`, the Markdown `layout` fuzz target now asserts §23.4 with a seed carrying escapes in every construct, and the OSC 8 injection replayed in a pseudo-terminal is clean. Before that: `util/text.rs` tests (D14); `path.rs`'s hostile-key test (D21); the `structured_layout` fuzz target asserts no rendered span contains ESC, a C0 control or a bidi override, across 129k executions; `no_structured_fixture_leaks_an_escape` at the command line; manual ESC/OSC/BEL/CR document emits none, in the document or the status line. Fuzzing found and closed one breach here — see §5. |
 | AC-19 | Tabs and splits are format-independent | **Verified** | `app/workspace.rs` tests; manual `:open side-by-side` with Markdown left and YAML right, `Ctrl-W` moving focus. |
 | AC-20 | Help is context-aware | **Verified** | `e4dd82e`: `?` is filtered by capabilities (`help_offers_only_what_the_document_can_do`) — until then only the key hints were; `app/hints.rs` capability-driven group tests; `:help` settings registry test; `--help` and the man page list the new flags and actions. |
