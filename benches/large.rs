@@ -61,8 +61,9 @@ fn bench_layout_large(c: &mut Criterion) {
 
 fn bench_search_large(c: &mut Criterion) {
     let doc = parse(&common::large(2 * MB));
-    // The index Markdown parsing already built; rebuilding it is measured below.
-    let index = &doc.search;
+    // Built on first use, as the first `/` would; building it is measured
+    // below.
+    let index = doc.search_index();
     let mut group = c.benchmark_group("large");
     group.sample_size(10);
     group.bench_function("search_index/2MB", |b| {

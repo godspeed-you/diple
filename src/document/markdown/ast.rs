@@ -41,8 +41,11 @@ pub struct Document {
     /// For every node id, the section it belongs to (if any). Indexed by
     /// `NodeId`; filled in by `sections::build`.
     pub node_section: Vec<Option<SectionId>>,
-    /// Full-text index over every node, in document order.
-    pub search: crate::document::search::SearchIndex,
+    /// Full-text index over every node, in document order — built on the
+    /// first search rather than at parse time, because a document piped to
+    /// another program is never searched and 1.x never paid for it either.
+    /// See [`Document::search_index`].
+    pub(crate) search: std::sync::OnceLock<crate::document::search::SearchIndex>,
 }
 
 /// A block-level node.
@@ -254,6 +257,12 @@ impl<'a> Iterator for Walk<'a> {
 }
 
 impl Document {
+    /// The full-text index over every node, built on first use.
+    pub fn search_index(&self) -> &crate::document::search::SearchIndex {
+        self.search
+            .get_or_init(|| crate::document::markdown::search::build(self))
+    }
+
     /// Pre-order iterator over every node, including nested ones. Ids come out
     /// in increasing order.
     pub fn walk(&self) -> Walk<'_> {

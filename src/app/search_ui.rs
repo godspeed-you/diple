@@ -131,7 +131,7 @@ mod tests {
 
     fn state(doc_src: &str, query: &str) -> SearchState {
         let doc = parse(doc_src);
-        let index = doc.search.clone();
+        let index = doc.search_index().clone();
         let mut s = SearchState {
             query: query.to_string(),
             ..SearchState::default()

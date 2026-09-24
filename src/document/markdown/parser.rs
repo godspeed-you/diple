@@ -22,7 +22,6 @@ use super::ast::{
 };
 use super::links::Link;
 use super::sections;
-use crate::document::search::SearchIndex;
 use crate::document::source::SourceDocument;
 
 /// Parser options used by diple.
@@ -51,7 +50,6 @@ pub fn parse_source(source: SourceDocument) -> Document {
     }
     let mut doc = builder.finish();
     sections::build(&mut doc);
-    doc.search = super::search::build(&doc);
     doc.source = source;
     doc
 }
@@ -839,7 +837,7 @@ impl Builder {
             links: self.links,
             top_level: self.top_level,
             node_section: Vec::new(),
-            search: SearchIndex::default(),
+            search: std::sync::OnceLock::new(),
         }
     }
 

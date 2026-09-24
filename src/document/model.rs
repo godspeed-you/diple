@@ -119,7 +119,7 @@ impl DocumentModel {
     /// The search index over everything the reader can see.
     pub fn search_index(&self) -> &SearchIndex {
         match self {
-            DocumentModel::Markdown(doc) => &doc.search,
+            DocumentModel::Markdown(doc) => doc.search_index(),
             DocumentModel::Structured(doc) => doc.search_index(),
         }
     }

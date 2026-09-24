@@ -377,7 +377,7 @@ mod tests {
     fn search_matches_split_spans() {
         let src = "a needle in **needle** stack\n";
         let doc = parse(src);
-        let matches = doc.search.find("needle", false);
+        let matches = doc.search_index().find("needle", false);
         assert_eq!(matches.len(), 2);
         let inlines = para(src);
         let spans = spans_unwrapped(&inlines, &Theme::dark(), Style::new(), &matches);
