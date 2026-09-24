@@ -1418,8 +1418,11 @@ mod tests {
         assert_eq!(tree.to_plain_text(), before);
     }
 
+    /// How fast the layout is, is the benchmarks' claim (`benches/`), not a
+    /// wall-clock assertion here: a fixed millisecond budget says nothing on
+    /// a machine that is busy compiling something else (spec §19.3).
     #[test]
-    fn deterministic_and_fast_enough() {
+    fn deterministic() {
         let src = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/readme.md"),
         )
@@ -1429,14 +1432,8 @@ mod tests {
         let opts = LayoutOptions::new(80, &theme);
         let engine = Layout::new();
         let a = engine.layout(&doc, &opts);
-        let start = std::time::Instant::now();
         let b = engine.layout(&doc, &opts);
-        let elapsed = start.elapsed();
         assert_eq!(a.to_plain_text(), b.to_plain_text());
-        assert!(
-            elapsed < std::time::Duration::from_millis(10),
-            "README layout took {elapsed:?}"
-        );
     }
 
     // --- LayoutOptions::apply_config ------------------------------------
