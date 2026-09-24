@@ -539,10 +539,30 @@ impl App {
     // -- help -------------------------------------------------------------
 
     /// Help entries with the *actual* current bindings, so custom keybindings
-    /// are reflected.
+    /// are reflected — for the actions the open document can use. A JSON
+    /// document has no links to follow and no diagrams to toggle, and help
+    /// that offers them is help about some other document (spec AC-20).
     pub(crate) fn help_entries(&self) -> Vec<(String, String)> {
+        let caps = self.doc.capabilities();
+        let markdown = self.doc.as_markdown().is_some();
         Action::ALL
             .iter()
+            .filter(|action| match action {
+                Action::OpenLink | Action::NextLink | Action::PreviousLink => caps.links,
+                Action::ToggleMermaidSource => markdown,
+                Action::NextHeading | Action::PreviousHeading => caps.hierarchy_navigation,
+                Action::NextHeadingSameLevel
+                | Action::PreviousHeadingSameLevel
+                | Action::ParentNode
+                | Action::FirstChild => caps.sibling_navigation,
+                Action::ToggleFold
+                | Action::CollapseFold
+                | Action::ExpandFold
+                | Action::CollapseAll
+                | Action::ExpandAll => caps.folding,
+                Action::ToggleToc => caps.outline,
+                _ => true,
+            })
             .map(|action| {
                 let keys = self.keymap.bindings_for(*action);
                 let keys = if keys.is_empty() {
@@ -862,6 +882,26 @@ mod tests {
 
     /// `zM`/`zR` report what they folded in the same word the key hints
     /// beside them use, which depends on the format.
+    #[test]
+    fn help_offers_only_what_the_document_can_do() {
+        let described =
+            |a: &App| -> Vec<String> { a.help_entries().into_iter().map(|(_, d)| d).collect() };
+        let markdown = described(&app());
+        let json = described(&crate::testing::json_app(r#"{"a": [1]}"#));
+        for action in [
+            Action::OpenLink,
+            Action::NextLink,
+            Action::ToggleMermaidSource,
+        ] {
+            let d = action.description().to_string();
+            assert!(markdown.contains(&d), "Markdown offers {d}");
+            assert!(!json.contains(&d), "JSON does not offer {d}");
+        }
+        for action in [Action::ToggleFold, Action::ParentNode, Action::ToggleToc] {
+            assert!(json.contains(&action.description().to_string()));
+        }
+    }
+
     #[test]
     fn fold_all_messages_name_what_the_format_folds() {
         let mut a = app();
