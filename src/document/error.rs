@@ -41,6 +41,12 @@ pub struct DocumentError {
     /// detection uses it to tell structured input that was cut short from
     /// prose that merely failed to parse (spec §6.6).
     pub incomplete: bool,
+    /// The input had already shown itself to be this format when it failed —
+    /// a JSON member name and its colon, or a separating comma, had been
+    /// read — so it is a broken document of that format rather than prose
+    /// that happens to begin like one. Content detection reports such an
+    /// error instead of falling back (spec §17.2).
+    pub committed: bool,
 }
 
 impl DocumentError {
@@ -76,6 +82,7 @@ impl DocumentError {
             message: message.into(),
             excerpt,
             incomplete: false,
+            committed: false,
         }
     }
 
@@ -92,6 +99,7 @@ impl DocumentError {
             message: message.into(),
             excerpt: Vec::new(),
             incomplete: false,
+            committed: false,
         }
     }
 
@@ -99,6 +107,13 @@ impl DocumentError {
     /// [`DocumentError::incomplete`]).
     pub fn ran_out(mut self) -> Self {
         self.incomplete = true;
+        self
+    }
+
+    /// Mark the error as one in input that was committed to its format (see
+    /// [`DocumentError::committed`]).
+    pub fn commit(mut self) -> Self {
+        self.committed = true;
         self
     }
 

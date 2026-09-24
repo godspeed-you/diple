@@ -97,27 +97,27 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
                     model: DocumentModel::structured(document),
                 })
             }
-            // Everything up to the end was valid JSON: `{"a": [1, 2`, not
-            // `{not json` or `[a link](url)`, which fail at their second byte.
+            // Valid JSON up to the end — `{"a": [1, 2`, `{"a": tr` — or
+            // input that had already read a member name or a comma before it
+            // broke: `{"broken": }` is a broken JSON document. `{not json`
+            // and `[a link](url)` fail before either and stay Markdown.
             Err(error) if error.incomplete => return Err(truncated(error)),
+            Err(error) if error.committed => return Err(broken(error)),
             Err(_) => {}
         }
     }
-    match yaml::parse(&source) {
-        Ok(document) if yaml::is_confidently_yaml(&document) => {
-            return Ok(LoadedDocument {
-                format: DocumentKind::Yaml,
-                detected: true,
-                model: DocumentModel::structured(document),
-            });
+    if probably_yaml(&source) {
+        match yaml::parse(&source) {
+            Ok(document) if yaml::is_confidently_yaml(&document) => {
+                return Ok(LoadedDocument {
+                    format: DocumentKind::Yaml,
+                    detected: true,
+                    model: DocumentModel::structured(document),
+                });
+            }
+            Err(error) if yaml_cut_short(&source, &error) => return Err(truncated(error)),
+            _ => {}
         }
-        // Prose can run out too (`'Tis the season` opens a quote it never
-        // closes), so running out alone says nothing: what does is a
-        // confidently-YAML stream before the construct that was left open.
-        Err(error) if error.incomplete && yaml_before(&source, &error) => {
-            return Err(truncated(error));
-        }
-        _ => {}
     }
     Ok(LoadedDocument {
         format: DocumentKind::Markdown,
@@ -126,27 +126,98 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
     })
 }
 
-/// Whether the lines before the one an error points at are a YAML stream
-/// detection would have claimed.
-fn yaml_before(source: &SourceDocument, error: &DocumentError) -> bool {
+/// How much of a large input the YAML probe reads first.
+const PROBE_BYTES: usize = 64 * 1024;
+
+/// A cheap first look before parsing a large input as YAML: its first
+/// [`PROBE_BYTES`], cut at a line break. A prefix that parses and is *not*
+/// YAML detection would claim settles it — a five-megabyte Markdown list is
+/// not worth parsing as YAML to the end to find that out. Anything else —
+/// a confident prefix, or one the cut left unparseable — earns the full parse.
+fn probably_yaml(source: &SourceDocument) -> bool {
+    let text = source.text();
+    if text.len() <= PROBE_BYTES {
+        return true;
+    }
+    let Some(cut) = text[..PROBE_BYTES].rfind('\n') else {
+        return true;
+    };
+    let prefix = SourceDocument::new(source.name(), &text[..cut + 1]);
+    match yaml::parse(&prefix) {
+        Ok(doc) => yaml::is_confidently_yaml(&doc),
+        Err(_) => true,
+    }
+}
+
+/// Whether a YAML parse failure is a YAML stream that was cut short: the
+/// lines before the failing one are a stream detection would claim, and the
+/// failure is where the input ends — an unclosed quote or bracket, or a break
+/// on the last line, which is where `head -c` or a dropped connection leaves
+/// a key half-written. Prose fails too (`'Tis the season` never closes its
+/// quote), which is why what came before has to be confidently YAML; an open
+/// flow collection needs only a mapping or sequence before it, because prose
+/// does not write `b: [1, 2`.
+fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> bool {
+    let at_the_end = error.incomplete || on_the_last_line(source, error);
+    if !at_the_end {
+        return false;
+    }
+    let Some(prefix) = lines_before(source, error) else {
+        return false;
+    };
+    match yaml::parse(&prefix) {
+        Ok(doc) if yaml::is_confidently_yaml(&doc) => true,
+        Ok(doc) => {
+            error.committed
+                && doc.roots().len() == 1
+                && doc
+                    .node(doc.roots()[0].node)
+                    .is_some_and(|n| n.is_container() && n.child_count > 0)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether an error points at the last line that has anything on it.
+fn on_the_last_line(source: &SourceDocument, error: &DocumentError) -> bool {
     let Some(position) = error.position else {
         return false;
     };
+    let last = source.text().trim_end().lines().count().max(1);
+    position.line >= last
+}
+
+/// The source up to the start of the line an error points at.
+fn lines_before(source: &SourceDocument, error: &DocumentError) -> Option<SourceDocument> {
+    let position = error.position?;
+    if position.line <= 1 {
+        return None;
+    }
     let text = source.text();
-    let Some(end) = text
+    let end = text
         .match_indices('\n')
-        .nth(position.line.saturating_sub(2))
-        .map(|(at, _)| at + 1)
-        .filter(|_| position.line > 1)
-    else {
-        return false;
-    };
-    let prefix = SourceDocument::new(source.name(), &text[..end]);
-    yaml::parse(&prefix).is_ok_and(|doc| yaml::is_confidently_yaml(&doc))
+        .nth(position.line - 2)
+        .map(|(at, _)| at + 1)?;
+    Some(SourceDocument::new(source.name(), &text[..end]))
+}
+
+/// A parse error in input that is clearly that format, with the reason
+/// diple did not fall back to Markdown.
+fn broken(mut error: DocumentError) -> DocumentError {
+    error.message = format!(
+        "{} — the input looks like {} that does not parse; \
+         pass `--format markdown` to read it as text",
+        error.message,
+        error.format.label()
+    );
+    error
 }
 
 /// A parse error, with the reason diple did not fall back to Markdown.
 fn truncated(mut error: DocumentError) -> DocumentError {
+    // Detection decided the input ran out, even where the parser saw only a
+    // key without its colon; the error says so like the parser's own would.
+    error.incomplete = true;
     error.message = format!(
         "{} — the input looks like {} that ends early; \
          pass `--format markdown` to read it as text",
@@ -276,6 +347,20 @@ mod tests {
         }
     }
 
+    /// Spec §17.2: input that had already read a member name or a comma is a
+    /// broken JSON document, not Markdown — and neither is a thousand
+    /// opening brackets.
+    #[test]
+    fn broken_json_that_committed_to_being_json_is_an_error() {
+        let deep = format!("{}{}", "[".repeat(5000), "]".repeat(5000));
+        for text in [r#"{"broken": }"#, "[1, 2, oops]", deep.as_str()] {
+            let error =
+                load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);
+            assert_eq!(error.format, DocumentKind::Json);
+            assert!(error.message.contains("--format markdown"), "{error:?}");
+        }
+    }
+
     /// Spec §6.6: structured input cut short is an error, not Markdown that
     /// looks almost right.
     #[test]
@@ -288,6 +373,13 @@ mod tests {
                 DocumentKind::Yaml,
             ),
             ("items:\n  - a\n  - b\nflow: {x: 1, y:", DocumentKind::Yaml),
+            (r#"{"a": tr"#, DocumentKind::Json),
+            ("a: 1\nb: [1, 2", DocumentKind::Yaml),
+            // Cut in the middle of a key, as `head -c` leaves it.
+            (
+                "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\nspec:\n  containers:\n  - image: nginx\n    nam",
+                DocumentKind::Yaml,
+            ),
         ] {
             let error =
                 load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);

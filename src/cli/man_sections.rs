@@ -56,7 +56,9 @@ for a file that is strict JSON under another name.
 Only a confident guess is taken: a document opening with
 .BR { " or " [
 that parses as strict JSON, or a YAML stream whose roots are all non\-empty
-collections. This is what makes
+collections and which shows structure prose does not produce: a mapping
+nested under a key, a mapping of several entries inside a list, several
+documents, an anchor or a tag. This is what makes
 .B kubectl get deployment nginx \-o yaml | diple
 open as YAML with nothing to configure.
 .TP
@@ -76,9 +78,8 @@ and the offending source, and diple exits non\-zero rather than opening the
 file as Markdown and looking almost right. A format only
 .I guessed
 from content falls back to Markdown instead, since nothing had claimed it \(em
-unless the content is JSON or YAML that parses cleanly until the input ends
-in the middle of a value, as a cut\-off pipeline does. That is reported as
-the error it is;
+unless the content is unmistakably JSON or YAML that was cut short or broken,
+as a cut\-off pipeline leaves it. That is reported as the error it is;
 .B \-\-format markdown
 reads such input as text.
 .PP

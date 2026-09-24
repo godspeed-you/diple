@@ -36,7 +36,9 @@ every key, every setting and every behaviour it had in 1.2.
   is binding: a `config.yaml` that does not parse is a YAML error naming the
   line, the column and the offending source, with a non-zero exit, rather than
   a Markdown document that looks almost right. A format merely *guessed* from
-  anonymous input falls back to Markdown, since nothing had claimed it.
+  anonymous input falls back to Markdown, since nothing had claimed it —
+  unless the input is unmistakably JSON or YAML that was cut short or broken,
+  which is reported like a stated format's error (see *Fixed*).
 - **Structure navigation in JSON and YAML.** `]` and `[` walk the containers —
   objects, arrays, mappings and sequences — exactly as they walk headings in
   Markdown; scalars are not stops, so `]` on a long array is not another `j`.
@@ -139,13 +141,17 @@ every key, every setting and every behaviour it had in 1.2.
   escaped — `"a: b": "c"`, `"x › y"`, `"[0]"` — while `metadata:` stays as it
   is. A YAML key keeps the quotes its source gave it.
 
-- **Piped JSON or YAML that was cut short is an error, not Markdown.**
-  `curl … | diple` on a response that ended early showed the half-document as
-  garbled Markdown and exited 0. Anonymous input that parses cleanly as JSON,
-  or as a YAML stream detection would have claimed, until the input runs out
-  inside a value now gets the parse error a stated format gets, with a hint
-  that `--format markdown` reads it as text. Prose that merely fails to parse
-  as either still opens as Markdown.
+- **Piped JSON or YAML that was cut short or broken is an error, not
+  Markdown.** `curl … | diple` on a response that ended early showed the
+  half-document as garbled Markdown and exited 0. Now anonymous input gets
+  the parse error a stated format gets, with a hint that `--format markdown`
+  reads it as text, when it is:
+  - JSON that runs out inside a value (`{"a": [1, 2`, `{"a": tr`), or that
+    breaks after a member name or a comma (`{"broken": }`);
+  - YAML that a stream detection would claim runs into, and that breaks where
+    the input ends: an unclosed quote or bracket, or a key half-written on
+    the last line.
+  Prose that merely fails to parse as either still opens as Markdown.
 
 - **YAML tags and quoted values read back as the source wrote them.** A
   verbatim tag lost its `!<…>` and read as part of the value, a tag on a
@@ -162,11 +168,17 @@ every key, every setting and every behaviour it had in 1.2.
   and a multi-document stream's `--- Document 1` — started scrolled out of
   sight.
 
-- **Two lines of prose are no longer mistaken for YAML.** `Note: this is
-  important.` followed by `Also: check that.` is a valid two-entry mapping,
-  and detection took it as one. A flat mapping whose every value is a
-  sentence now stays Markdown; `name: diple` and `description: A pager.`
-  are still YAML.
+- **Markdown piped to diple is no longer mistaken for YAML.** A Markdown list
+  with a colon in an item (`- Fast: written in Rust`), an introduction over a
+  list (`Next steps:` then `- write tests`), and lines of prose that each put a
+  colon after their first word (`Note: this is important.`) are all valid
+  YAML, and detection claimed them — so `cat README.md | diple` could show a
+  sequence where 1.x showed bullets. Detection now counts only structure prose
+  does not write: a mapping under a mapping key, a mapping of two entries or
+  more inside a container, several documents, directives, anchors, aliases
+  or tags, or a top-level mapping whose keys and values do not read as
+  phrases. `kubectl … -o yaml`, Compose files and Ansible playbooks are
+  recognised as before.
 
 ### Breaking
 

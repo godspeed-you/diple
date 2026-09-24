@@ -193,6 +193,13 @@ with YAML front matter as Markdown — its body parses as a bare scalar. JSON is
 claimed only when the first token is `{` or `[` *and* strict parsing succeeds,
 so a bare `42` on stdin stays Markdown.
 
+Narrowed after the second audit found Markdown lists claimed as YAML: "a
+container inside a container" was a signal, and `- Fast: written in Rust` is
+one. The signals are now a mapping under a mapping key, a mapping of two or
+more entries at depth > 0, multiple documents, directives, anchors, aliases
+and tags, or a flat top-level mapping of two or more entries whose keys have
+no spaces and whose values are not all phrases.
+
 ### D12 — a *stated* format that fails to parse is an error; a *guess* falls back
 
 `document/load.rs`. `--format` and a recognised suffix are statements
@@ -204,6 +211,12 @@ unclosed string, bracket or quote, flagged as `DocumentError::incomplete` by
 both parsers — is an error, because §6.6 names exactly that case. For YAML the
 lines before the open construct must also be a stream detection would have
 claimed, since prose opens quotes it never closes (`'Tis the season`).
+
+Widened after the second audit: a YAML break on the last line (a key cut in
+half) counts as running out; an unclosed flow collection needs only a
+collection before it; and JSON that fails after a member name, a comma, or
+at the depth limit is `DocumentError::committed` and reported as broken
+JSON. A large input is probed on its first 64 KiB before a full YAML parse.
 
 ### D13 — search fields, not just nodes
 

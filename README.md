@@ -147,17 +147,20 @@ The format is decided in this order, and the first rule that applies wins:
 2. **The file name**, per the table above.
 3. **The content**, but only a confident guess: a document that opens with `{`
    or `[` and parses as strict JSON, or a YAML stream whose roots are all
-   non-empty collections with at least one structural signal. This is what
-   makes `kubectl get … -o yaml | diple` work with nothing to configure.
+   non-empty collections with at least one signal prose does not produce — a
+   mapping nested under a key, a mapping of several entries inside a list,
+   several documents, an anchor or a tag. A Markdown list whose items contain
+   a colon parses as YAML too, and stays Markdown. This is what makes
+   `kubectl get … -o yaml | diple` work with nothing to configure.
 4. **Markdown**, the fallback. Prose and anything else ambiguous stay Markdown.
 
 A format *stated* by `--format` or by the file name is binding: a `config.yaml`
 that does not parse is reported as a YAML error and diple exits non-zero
 rather than opening it as Markdown and looking almost right. A format merely
 *guessed* from the content of anonymous input falls back to Markdown instead,
-since nothing had claimed it — unless the input is JSON or YAML that parses
-cleanly until it ends in the middle of a value, as a cut-off pipeline does.
-That is reported as the error it is; `--format markdown` reads it as text.
+since nothing had claimed it — unless the input is unmistakably JSON or YAML
+that was cut short or broken, as a cut-off pipeline leaves it. That is
+reported as the error it is; `--format markdown` reads it as text.
 
 JSON with comments is not a format diple reads, so `.jsonc` is deliberately
 not recognised.

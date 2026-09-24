@@ -64,6 +64,9 @@ struct Parser<'a> {
     pos: usize,
     builder: Builder,
     frames: Vec<Frame>,
+    /// Set once the input has shown itself to be JSON (see
+    /// [`DocumentError::committed`]).
+    committed: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -79,6 +82,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             builder,
             frames: Vec::new(),
+            committed: false,
         }
     }
 
@@ -119,6 +123,17 @@ impl<'a> Parser<'a> {
 
     fn expected(&self, what: &str) -> DocumentError {
         match self.peek() {
+            Some(b) if b >= 0x80 => {
+                // A multi-byte character: name it, not its lead byte.
+                let rest = std::str::from_utf8(&self.text[self.pos..]).ok();
+                let found = rest
+                    .and_then(|r| r.chars().next())
+                    .map_or_else(|| format!("0x{b:02x}"), |c| format!("`{c}`"));
+                self.error(
+                    self.pos,
+                    crate::util::text::sanitize(&format!("expected {what}, found {found}")),
+                )
+            }
             Some(b) => self.error(self.pos, format!("expected {what}, found {}", describe(b))),
             None => self
                 .error(
@@ -130,10 +145,12 @@ impl<'a> Parser<'a> {
     }
 
     fn depth_error(&self) -> DocumentError {
+        // A thousand opening brackets are not prose.
         self.error(
             self.pos,
             format!("nested more than {MAX_DEPTH} levels deep; diple refuses to go further"),
         )
+        .commit()
     }
 
     // ---- the state machine ----------------------------------------------
@@ -144,7 +161,13 @@ impl<'a> Parser<'a> {
         if self.peek().is_none() {
             return Err(self.error(self.pos, "the document is empty"));
         }
-        self.parse_values()?;
+        self.parse_values().map_err(|error| {
+            if self.committed {
+                error.commit()
+            } else {
+                error
+            }
+        })?;
         self.skip_ws();
         if self.pos < self.text.len() {
             return Err(self.error(
@@ -213,6 +236,7 @@ impl<'a> Parser<'a> {
                 match frame {
                     Frame::Object => {
                         if self.eat(b',') {
+                            self.committed = true;
                             relation = self.object_key()?;
                             continue 'value;
                         }
@@ -224,6 +248,7 @@ impl<'a> Parser<'a> {
                     }
                     Frame::Array { next_index } => {
                         if self.eat(b',') {
+                            self.committed = true;
                             let index = next_index + 1;
                             if let Some(Frame::Array { next_index }) = self.frames.last_mut() {
                                 *next_index = index;
@@ -263,6 +288,7 @@ impl<'a> Parser<'a> {
         if !self.eat(b':') {
             return Err(self.expected("`:` after the member name"));
         }
+        self.committed = true;
         Ok(NodeRelation::MappingEntry {
             key: StructuredKey {
                 text,
@@ -309,6 +335,14 @@ impl<'a> Parser<'a> {
         if self.text.get(self.pos..end) == Some(word.as_bytes()) {
             self.pos = end;
             Ok(())
+        } else if word.as_bytes().starts_with(&self.text[self.pos..]) {
+            // `tr` at the end of the input: a `true` that was cut off.
+            Err(self
+                .error(
+                    self.pos,
+                    format!("expected `{word}`, reached the end of the input"),
+                )
+                .ran_out())
         } else {
             Err(self.expected(&format!("`{word}`")))
         }

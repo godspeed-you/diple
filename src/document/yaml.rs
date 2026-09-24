@@ -607,11 +607,12 @@ impl<'a> Loader<'a> {
             Self::byte_of(marker),
             error.info(),
         );
-        // A quote or a flow collection still open when the stream ends.
+        // A quote or a flow collection still open when the stream ends. A
+        // flow collection is also a commitment: prose opens quotes it never
+        // closes, but `b: [1, 2` is YAML (or JSON) syntax.
         match error.kind() {
-            ErrorKind::UnclosedQuotedScalar | ErrorKind::UnclosedFlowCollection { .. } => {
-                report.ran_out()
-            }
+            ErrorKind::UnclosedQuotedScalar => report.ran_out(),
+            ErrorKind::UnclosedFlowCollection { .. } => report.ran_out().commit(),
             _ => report,
         }
     }
@@ -832,27 +833,54 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
         {
             return true;
         }
-        // A container inside a container: a nested mapping, a mapping holding
-        // a sequence, or a sequence of mappings.
-        if node.is_container() && node.depth > 0 {
-            return true;
+        // A mapping inside a container, in a shape a Markdown list cannot
+        // take. `- Fast: written in Rust` is a one-entry mapping inside a
+        // sequence, and `Steps:` over a list is a sequence inside a mapping —
+        // both are ordinary Markdown. What prose does not write is a mapping
+        // under a mapping key (`metadata:` over `name: web`), or a mapping of
+        // two entries or more inside anything (`- name: x` over `image: y`).
+        if matches!(node.kind, StructuredNodeKind::Mapping) && node.depth > 0 {
+            let under_a_key = node
+                .parent
+                .and_then(|p| doc.node(p))
+                .is_some_and(|p| matches!(p.kind, StructuredNodeKind::Mapping));
+            if under_a_key || node.child_count >= 2 {
+                return true;
+            }
         }
     }
-    // A mapping with at least two entries at the top level — unless every
-    // value is a sentence, which is how prose that happens to put a colon
-    // after its first word reads: `Note: this is important.` and `Q: why?`.
+    // A mapping with at least two entries at the top level — unless it reads
+    // as prose: a key with a space in it (`Shopping list:`), or values that
+    // are all sentences or phrases (`Note: this is important.`, `Error: file
+    // not found`).
     doc.roots().iter().any(|root| {
         doc.node(root.node).is_some_and(|n| {
             matches!(n.kind, StructuredNodeKind::Mapping)
                 && n.child_count >= 2
-                && !doc.children(root.node).iter().all(|&child| {
-                    doc.node(child).and_then(|c| c.scalar()).is_some_and(|v| {
-                        v.style == ScalarStyle::Plain
-                            && v.text.trim_end().ends_with(['.', '!', '?', '\u{2026}'])
-                    })
-                })
+                && !flat_mapping_reads_as_prose(doc, root.node)
         })
     })
+}
+
+/// Whether a top-level mapping looks like lines of prose that each happen to
+/// put a colon after their first word.
+fn flat_mapping_reads_as_prose(doc: &StructuredDocument, mapping: NodeId) -> bool {
+    let children = doc.children(mapping);
+    let key_with_space = children.iter().any(|&child| {
+        doc.node(child).and_then(|c| c.key()).is_some_and(|k| {
+            !k.complex && k.style == ScalarStyle::Plain && k.name().contains(char::is_whitespace)
+        })
+    });
+    let all_phrases = children.iter().all(|&child| {
+        doc.node(child).and_then(|c| c.scalar()).is_some_and(|v| {
+            let text = v.text.trim();
+            v.style == ScalarStyle::Plain
+                && v.kind == ScalarKind::String
+                && (text.contains(char::is_whitespace)
+                    || text.ends_with(['.', '!', '?', '\u{2026}']))
+        })
+    });
+    key_with_space || all_phrases
 }
 
 #[cfg(test)]
@@ -1518,7 +1546,11 @@ mod tests {
         assert!(confident("a: &x 1\nb: *x\n"));
         assert!(confident("---\na: 1\n---\nb: 2\n"));
         assert!(confident("%YAML 1.2\n---\na: 1\n"));
-        assert!(confident("items:\n  - name: a\n"));
+        assert!(confident("items:\n  - name: a\n    image: b\n"));
+        assert!(confident(
+            "- hosts: all\n  tasks:\n    - name: x\n      apt: y\n"
+        ));
+        assert!(confident("services:\n  web:\n    image: nginx\n"));
         assert!(confident("a: !!str x\n"));
     }
 
@@ -1535,6 +1567,18 @@ mod tests {
             // Markdown with YAML front matter: the body is a scalar, so the
             // stream is not coherent.
             "---\ntitle: Post\ndate: 2026-08-31\n---\n\nSome **bold** prose.\n",
+            // A list whose items have a colon in them, or an introduction
+            // over a list: the shapes Markdown writes that YAML also parses
+            // as nested collections.
+            "items:\n  - name: a\n",
+            "Here are the next steps:\n\n- write tests\n- ship it\n",
+            "# diple\n\n## Features\n\n- Fast: written in Rust\n- Small binary\n",
+            "- Buy milk\n- Call mom: urgent\n",
+            "# Links\n\n- Homepage: https://example.com\n",
+            "Shopping list:\n- milk\n- eggs\n",
+            // Lines of prose that each put a colon after their first word.
+            "Note: this is important.\nAlso: check that.\n",
+            "Error: file not found\nHint: try again\n",
         ] {
             assert!(!confident(src), "{src:?} must stay Markdown");
         }

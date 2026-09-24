@@ -530,13 +530,14 @@ pub fn format_detect(data: &[u8]) {
         }
     } else if let Err(error) = &first {
         // Detection falls back to Markdown, with one exception: structured
-        // input that ran out inside a value is reported (spec §6.6). Only a
-        // stated format — from `--format` or from the filename — can error
-        // for any other reason.
+        // input that ran out inside a value, or broke after committing to
+        // its format, is reported (spec §6.6, §17.2). Only a stated format —
+        // from `--format` or from the filename — can error for any other
+        // reason.
         let stated =
             request.fixed().is_some() || diple::document::format::from_extension(name).is_some();
         assert!(
-            stated || (error.incomplete && error.format.is_structured()),
+            stated || ((error.incomplete || error.committed) && error.format.is_structured()),
             "an unstated format must fall back unless it was cut short: {error:?}"
         );
     }
