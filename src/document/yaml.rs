@@ -601,12 +601,19 @@ impl<'a> Loader<'a> {
         if matches!(error.kind(), ErrorKind::RecursionLimitExceeded) {
             return self.depth_error(marker);
         }
-        DocumentError::at(
+        let report = DocumentError::at(
             self.source,
             DocumentKind::Yaml,
             Self::byte_of(marker),
             error.info(),
-        )
+        );
+        // A quote or a flow collection still open when the stream ends.
+        match error.kind() {
+            ErrorKind::UnclosedQuotedScalar | ErrorKind::UnclosedFlowCollection { .. } => {
+                report.ran_out()
+            }
+            _ => report,
+        }
     }
 
     fn depth_error(&self, marker: &Marker) -> DocumentError {

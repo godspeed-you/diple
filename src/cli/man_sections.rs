@@ -75,7 +75,12 @@ that does not parse is reported as a YAML error naming the line, the column
 and the offending source, and diple exits non\-zero rather than opening the
 file as Markdown and looking almost right. A format only
 .I guessed
-from content falls back to Markdown instead, since nothing had claimed it.
+from content falls back to Markdown instead, since nothing had claimed it \(em
+unless the content is JSON or YAML that parses cleanly until the input ends
+in the middle of a value, as a cut\-off pipeline does. That is reported as
+the error it is;
+.B \-\-format markdown
+reads such input as text.
 .PP
 JSON and YAML presentation is controlled by
 .BR \-\-structured\-indent ", " \-\-path

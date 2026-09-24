@@ -746,9 +746,21 @@ fn an_invalid_structured_document_reports_and_exits_non_zero() {
 /// failing: nothing had claimed it (§17.2).
 #[test]
 fn a_guess_that_does_not_parse_falls_back_to_markdown() {
-    let out = piped(&[], "{\"a\": 1,\n");
+    let out = piped(&[], "{\"a\": 1} is how a set is written\n");
     assert!(out.status.success(), "status: {:?}", out.status);
     assert!(String::from_utf8_lossy(&out.stdout).contains("\"a\""));
+}
+
+/// Structured input that runs out mid-value is a pipeline cut short, and
+/// saying so beats showing half a document as Markdown (§6.6).
+#[test]
+fn structured_input_cut_short_is_an_error() {
+    let out = piped(&[], "{\"a\": 1,\n");
+    assert!(!out.status.success(), "status: {:?}", out.status);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("JSON parse error"), "{stderr}");
+    assert!(stderr.contains("--format markdown"), "{stderr}");
+    assert!(out.stdout.is_empty());
 }
 
 #[test]

@@ -8,6 +8,13 @@
 //! otherwise         →  content detection, then Markdown
 //! ```
 //!
+//! One exception to the fallback: input that is structured up to the point
+//! where it stops — a JSON container or a YAML stream that parses cleanly
+//! until the input runs out mid-value — was clearly meant as that format,
+//! and is most likely a pipeline that was cut short. Showing it as Markdown
+//! would hide that, so it is an error like a stated format's (spec §6.6,
+//! §17.2).
+//!
 //! The asymmetry is deliberate. When the user or the filename *said* what the
 //! document is, a parse failure is a fact the reader needs — `config.yaml`
 //! that will not parse must say so at the line it broke on, not silently open
@@ -53,7 +60,7 @@ pub fn load(
     if let Some(kind) = format::from_extension(source.name()) {
         return parse_as(kind, source, false);
     }
-    Ok(detect(source))
+    detect(source)
 }
 
 /// Parse `source` as a stated format; a failure is reported rather than
@@ -75,34 +82,78 @@ fn parse_as(
     })
 }
 
-/// Work the format out from the content, falling back to Markdown.
-fn detect(source: SourceDocument) -> LoadedDocument {
+/// Work the format out from the content, falling back to Markdown — unless
+/// the content is structured input that was cut short.
+fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
     // JSON first: the `{`/`[` test is cheap and decisive, and a document that
     // starts that way and parses strictly is not prose. A bare JSON scalar
     // deliberately does not qualify — `42` and `"hello"` are ordinary text.
     if format::looks_like_json_container(source.text()) {
-        if let Ok(document) = json::parse(&source) {
-            return LoadedDocument {
-                format: DocumentKind::Json,
-                detected: true,
-                model: DocumentModel::structured(document),
-            };
+        match json::parse(&source) {
+            Ok(document) => {
+                return Ok(LoadedDocument {
+                    format: DocumentKind::Json,
+                    detected: true,
+                    model: DocumentModel::structured(document),
+                })
+            }
+            // Everything up to the end was valid JSON: `{"a": [1, 2`, not
+            // `{not json` or `[a link](url)`, which fail at their second byte.
+            Err(error) if error.incomplete => return Err(truncated(error)),
+            Err(_) => {}
         }
     }
-    if let Ok(document) = yaml::parse(&source) {
-        if yaml::is_confidently_yaml(&document) {
-            return LoadedDocument {
+    match yaml::parse(&source) {
+        Ok(document) if yaml::is_confidently_yaml(&document) => {
+            return Ok(LoadedDocument {
                 format: DocumentKind::Yaml,
                 detected: true,
                 model: DocumentModel::structured(document),
-            };
+            });
         }
+        // Prose can run out too (`'Tis the season` opens a quote it never
+        // closes), so running out alone says nothing: what does is a
+        // confidently-YAML stream before the construct that was left open.
+        Err(error) if error.incomplete && yaml_before(&source, &error) => {
+            return Err(truncated(error));
+        }
+        _ => {}
     }
-    LoadedDocument {
+    Ok(LoadedDocument {
         format: DocumentKind::Markdown,
         detected: true,
         model: DocumentModel::markdown(markdown::parse_source(source)),
-    }
+    })
+}
+
+/// Whether the lines before the one an error points at are a YAML stream
+/// detection would have claimed.
+fn yaml_before(source: &SourceDocument, error: &DocumentError) -> bool {
+    let Some(position) = error.position else {
+        return false;
+    };
+    let text = source.text();
+    let Some(end) = text
+        .match_indices('\n')
+        .nth(position.line.saturating_sub(2))
+        .map(|(at, _)| at + 1)
+        .filter(|_| position.line > 1)
+    else {
+        return false;
+    };
+    let prefix = SourceDocument::new(source.name(), &text[..end]);
+    yaml::parse(&prefix).is_ok_and(|doc| yaml::is_confidently_yaml(&doc))
+}
+
+/// A parse error, with the reason diple did not fall back to Markdown.
+fn truncated(mut error: DocumentError) -> DocumentError {
+    error.message = format!(
+        "{} — the input looks like {} that ends early; \
+         pass `--format markdown` to read it as text",
+        error.message,
+        error.format.label()
+    );
+    error
 }
 
 #[cfg(test)]
@@ -209,8 +260,38 @@ mod tests {
     fn broken_anonymous_input_falls_back_rather_than_failing() {
         // Nothing said this was JSON, so a `{` that does not parse is just a
         // Markdown document that starts with a brace.
-        let d = open("<stdin>", "{not json at all");
-        assert_eq!(d.format, DocumentKind::Markdown);
+        for text in [
+            "{not json at all",
+            "[a link](https://example.com) to start with\n",
+            "[1, 2] is a list, {x} a set\n",
+            "'Tis the season\n",
+            "\"Unfinished quote\n",
+            "Note: this is important.\n\"And this",
+        ] {
+            let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text))
+                .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));
+            assert_eq!(d.format, DocumentKind::Markdown, "{text:?}");
+        }
+    }
+
+    /// Spec §6.6: structured input cut short is an error, not Markdown that
+    /// looks almost right.
+    #[test]
+    fn truncated_structured_input_is_an_error() {
+        for (text, kind) in [
+            (r#"{"a": [1, 2"#, DocumentKind::Json),
+            ("[\n  {\"name\": \"x\"},\n  {\"name\": ", DocumentKind::Json),
+            (
+                "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\nspec:\n  image: \"nginx:1.",
+                DocumentKind::Yaml,
+            ),
+            ("items:\n  - a\n  - b\nflow: {x: 1, y:", DocumentKind::Yaml),
+        ] {
+            let error =
+                load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);
+            assert_eq!(error.format, kind, "{text:?}");
+            assert!(error.message.contains("--format markdown"), "{error:?}");
+        }
     }
 
     #[test]

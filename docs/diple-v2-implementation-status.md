@@ -219,6 +219,13 @@ so a bare `42` on stdin stays Markdown.
 `document/load.rs`. `--format` and a recognised suffix are statements
 (spec §17.1); anonymous stdin is a guess (§17.2).
 
+One exception, added after the independent audit found AC-17 failing on it:
+a guess that parses cleanly until the input runs out *inside a value* — an
+unclosed string, bracket or quote, flagged as `DocumentError::incomplete` by
+both parsers — is an error, because §6.6 names exactly that case. For YAML the
+lines before the open construct must also be a stream detection would have
+claimed, since prose opens quotes it never closes (`'Tis the season`).
+
 ### D13 — search fields, not just nodes
 
 `Match` carries a `MatchField` (`Body`, `Label`, `Value`, `Comment`, `Tag`,

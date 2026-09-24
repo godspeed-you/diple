@@ -134,6 +134,14 @@ every key, every setting and every behaviour it had in 1.2.
   escaped — `"a: b": "c"`, `"x › y"`, `"[0]"` — while `metadata:` stays as it
   is. A YAML key keeps the quotes its source gave it.
 
+- **Piped JSON or YAML that was cut short is an error, not Markdown.**
+  `curl … | diple` on a response that ended early showed the half-document as
+  garbled Markdown and exited 0. Anonymous input that parses cleanly as JSON,
+  or as a YAML stream detection would have claimed, until the input runs out
+  inside a value now gets the parse error a stated format gets, with a hint
+  that `--format markdown` reads it as text. Prose that merely fails to parse
+  as either still opens as Markdown.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

@@ -36,6 +36,11 @@ pub struct DocumentError {
     pub message: String,
     /// The lines around `position`, as `(number, text)`.
     excerpt: Vec<(usize, String)>,
+    /// The input ran out in the middle of a value — an unclosed string,
+    /// bracket or quote — rather than containing something wrong. Content
+    /// detection uses it to tell structured input that was cut short from
+    /// prose that merely failed to parse (spec §6.6).
+    pub incomplete: bool,
 }
 
 impl DocumentError {
@@ -70,6 +75,7 @@ impl DocumentError {
             position: Some(Position { line, column }),
             message: message.into(),
             excerpt,
+            incomplete: false,
         }
     }
 
@@ -85,7 +91,15 @@ impl DocumentError {
             position: None,
             message: message.into(),
             excerpt: Vec::new(),
+            incomplete: false,
         }
+    }
+
+    /// Mark the error as the input running out (see
+    /// [`DocumentError::incomplete`]).
+    pub fn ran_out(mut self) -> Self {
+        self.incomplete = true;
+        self
     }
 
     /// The full report: heading, position, source excerpt with a caret, and

@@ -155,7 +155,9 @@ A format *stated* by `--format` or by the file name is binding: a `config.yaml`
 that does not parse is reported as a YAML error and diple exits non-zero
 rather than opening it as Markdown and looking almost right. A format merely
 *guessed* from the content of anonymous input falls back to Markdown instead,
-since nothing had claimed it.
+since nothing had claimed it — unless the input is JSON or YAML that parses
+cleanly until it ends in the middle of a value, as a cut-off pipeline does.
+That is reported as the error it is; `--format markdown` reads it as text.
 
 JSON with comments is not a format diple reads, so `.jsonc` is deliberately
 not recognised.

@@ -118,11 +118,15 @@ impl<'a> Parser<'a> {
     }
 
     fn expected(&self, what: &str) -> DocumentError {
-        let found = match self.peek() {
-            Some(b) => format!("found {}", describe(b)),
-            None => "reached the end of the input".to_string(),
-        };
-        self.error(self.pos, format!("expected {what}, {found}"))
+        match self.peek() {
+            Some(b) => self.error(self.pos, format!("expected {what}, found {}", describe(b))),
+            None => self
+                .error(
+                    self.pos,
+                    format!("expected {what}, reached the end of the input"),
+                )
+                .ran_out(),
+        }
     }
 
     fn depth_error(&self) -> DocumentError {
@@ -357,7 +361,7 @@ impl<'a> Parser<'a> {
         let mut run_start = self.pos;
         loop {
             let Some(byte) = self.peek() else {
-                return Err(self.error(open, "unterminated string"));
+                return Err(self.error(open, "unterminated string").ran_out());
             };
             match byte {
                 b'"' => {
@@ -385,7 +389,7 @@ impl<'a> Parser<'a> {
     fn escape(&mut self, out: &mut String) -> Result<(), DocumentError> {
         let at = self.pos;
         let Some(byte) = self.peek() else {
-            return Err(self.error(at, "unterminated escape"));
+            return Err(self.error(at, "unterminated escape").ran_out());
         };
         self.bump();
         let c = match byte {
