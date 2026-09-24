@@ -106,7 +106,10 @@ fn detect(source: SourceDocument) -> Result<LoadedDocument, DocumentError> {
             Err(_) => {}
         }
     }
-    if !starts_indented(source.text()) && probably_yaml(&source) {
+    if !starts_indented(source.text())
+        && !has_indented_code_block(source.text())
+        && probably_yaml(&source)
+    {
         match yaml::parse(&source) {
             Ok(document) if yaml::is_confidently_yaml(&document) => {
                 return Ok(LoadedDocument {
@@ -138,6 +141,29 @@ fn starts_indented(text: &str) -> bool {
             !(t.is_empty() || t.starts_with('#') || t.starts_with('%') || t.starts_with("---"))
         })
         .is_some_and(|line| line.starts_with([' ', '\t']))
+}
+
+/// Whether a line after a blank line is indented four or more columns deeper
+/// than the line before the blank — a Markdown indented code block
+/// (`Example config:` over an indented example). YAML nests two or so
+/// columns at a time and does not open a level after a blank line.
+fn has_indented_code_block(text: &str) -> bool {
+    let indent = |line: &str| line.len() - line.trim_start_matches([' ', '\t']).len();
+    let mut previous: Option<usize> = None;
+    let mut blank = false;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            blank = true;
+            continue;
+        }
+        let here = indent(line);
+        if blank && previous.is_some_and(|p| here >= p + 4) {
+            return true;
+        }
+        previous = Some(here);
+        blank = false;
+    }
+    false
 }
 
 /// How much of a large input the YAML probe reads first.
@@ -177,39 +203,36 @@ fn probably_yaml(source: &SourceDocument) -> bool {
 fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> bool {
     // Only a construct the parser saw left open. A break on the last line
     // was tried as a signal too, and refused ordinary notes — `Name: Alice`
-    // over `Role: Admin` over a closing `Thanks!` — with exit 1.
+    // over `Role: Admin` over a closing `Thanks!` — with exit 1; and so did
+    // accepting an open bracket after any mapping (`Status: draft` over
+    // `[TODO: fill in`). What comes before has to be confidently YAML.
     if !error.incomplete {
         return false;
     }
-    let Some(prefix) = lines_before(source, error) else {
+    let Some(position) = error.position else {
         return false;
     };
-    match yaml::parse(&prefix) {
-        Ok(doc) if yaml::is_confidently_yaml(&doc) => true,
-        Ok(doc) => {
-            error.committed
-                && doc.roots().len() == 1
-                && doc
-                    .node(doc.roots()[0].node)
-                    .is_some_and(|n| n.is_container() && n.child_count > 0)
-        }
-        Err(_) => false,
-    }
+    // The parser may point past the construct it could not finish (a quoted
+    // scalar cut at a line break is reported where the input ends), so walk
+    // back from its line to the last one that starts a parseable prefix.
+    let text = source.text();
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let line = position.line.min(starts.len());
+    (1..line)
+        .rev()
+        .take(TRUNCATED_LINES)
+        .map(|l| starts[l])
+        .filter(|&end| end > 0)
+        .find_map(|end| yaml::parse(&SourceDocument::new(source.name(), &text[..end])).ok())
+        .is_some_and(|doc| yaml::is_confidently_yaml(&doc))
 }
 
-/// The source up to the start of the line an error points at.
-fn lines_before(source: &SourceDocument, error: &DocumentError) -> Option<SourceDocument> {
-    let position = error.position?;
-    if position.line <= 1 {
-        return None;
-    }
-    let text = source.text();
-    let end = text
-        .match_indices('\n')
-        .nth(position.line - 2)
-        .map(|(at, _)| at + 1)?;
-    Some(SourceDocument::new(source.name(), &text[..end]))
-}
+/// How far back from a failure [`yaml_cut_short`] looks for the start of the
+/// construct that was left open: a quoted scalar or flow collection longer
+/// than this is not a cut the reader will recognise anyway.
+const TRUNCATED_LINES: usize = 16;
 
 /// A parse error in input that is clearly that format, with the reason
 /// diple did not fall back to Markdown.
@@ -357,6 +380,19 @@ mod tests {
             "[2024, the year] in review\n",
             "[1, Smith et al.] showed this.\n",
             "# Config\n\n    server:\n      port: 80\n",
+            "# Setup\n\nExample config:\n\n    server:\n      port: 80\n",
+            "Example:\n\n    server:\n      port: 80\n",
+            // An open bracket after lines that are not confidently YAML.
+            "a: 1\nb: [1, 2",
+            "- buy milk\n- call mom\n\n[later: the rest of the list\n",
+            "Status: draft\nOwner: me\n\n[TODO: fill in the rest",
+            "Note: see below\n\n{placeholder text",
+            // An HTML entity or a `!` at the start of a list item, and a
+            // wrapped item whose lines both hold a colon.
+            "- &copy; 2024 ACME\n- All rights reserved\n",
+            "- !important: read this\n- then that\n",
+            "- Fix: the cache is cleared on restart. See also the\n  release notes: they explain it.\n",
+            "- Stack-Footprint: Keycloak, NATS, Postgres gleichzeitig\n  Gegenmassnahme: vorbefuelltes Compose-Profil.\n",
         ] {
             let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text))
                 .unwrap_or_else(|e| panic!("{text:?}: {e:?}"));
@@ -433,9 +469,14 @@ mod tests {
                 "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\nspec:\n  image: \"nginx:1.",
                 DocumentKind::Yaml,
             ),
-            ("items:\n  - a\n  - b\nflow: {x: 1, y:", DocumentKind::Yaml),
+            ("metadata:\n  name: web\nflow: {x: 1, y:", DocumentKind::Yaml),
             (r#"{"a": tr"#, DocumentKind::Json),
-            ("a: 1\nb: [1, 2", DocumentKind::Yaml),
+            // A multi-line quoted value cut at a line break, as `head -n`
+            // leaves it.
+            (
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n  note: \"first line\n",
+                DocumentKind::Yaml,
+            ),
         ] {
             let error =
                 load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).expect_err(text);

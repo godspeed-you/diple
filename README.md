@@ -148,8 +148,9 @@ The format is decided in this order, and the first rule that applies wins:
 3. **The content**, but only a confident guess: a document that opens with `{`
    or `[` and parses as strict JSON, or a YAML stream whose roots are all
    non-empty collections with at least one signal prose does not produce — a
-   mapping nested under a key, a mapping of several entries inside a list, an
-   anchor, a tag or a `%YAML` directive. A Markdown list whose items contain a
+   mapping nested under a key or a mapping of several entries inside a list
+   (with identifier-like keys), an anchor some alias uses, a `!!` tag or a
+   `%YAML` directive. A Markdown list whose items contain a
    colon, `Status: done` over `Owner: alice`, and lists separated by `---`
    all parse as YAML too, and stay Markdown; so does a flat YAML file piped
    in, which needs `--format yaml`. This is what makes

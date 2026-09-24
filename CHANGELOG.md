@@ -161,7 +161,8 @@ every key, every setting and every behaviour it had in 1.2.
   - JSON that runs out inside a value (`{"a": [1, 2`, `{"a": tr`), or that
     breaks after an object's first member name (`{"broken": }`);
   - YAML that a stream detection would claim runs into, and that the input
-    leaves inside an unclosed quote or bracket.
+    leaves inside an unclosed quote or bracket — including a multi-line quoted
+    value cut at a line break by `head -n`.
   Prose that merely fails to parse as either still opens as Markdown.
 
 - **YAML tags and quoted values read back as the source wrote them.** A
@@ -192,11 +193,14 @@ every key, every setting and every behaviour it had in 1.2.
   colon after their first word (`Note: this is important.`) are all valid
   YAML, and detection claimed them — so `cat README.md | diple` could show a
   sequence where 1.x showed bullets. Detection now counts only structure prose
-  does not write: a mapping under a mapping key, a mapping of two entries or
-  more inside a container, directives, anchors, aliases or tags. A flat
-  mapping (`Status: done` over `Owner: alice`) and a stream split by `---`
-  (lists separated by a rule, front matter over a list) are no longer taken
-  as YAML; a flat YAML file piped in needs `--format yaml`. `kubectl … -o
+  does not write: a mapping under a mapping key or a mapping of two entries or
+  more inside a container, with keys and values that are not phrases; a
+  `%YAML` directive; an anchor an alias uses; a `!!` tag. A flat mapping
+  (`Status: done` over `Owner: alice`), a stream split by `---` (lists
+  separated by a rule, front matter over a list), an HTML entity at the start
+  of a list item (`- &copy; 2024`), a wrapped list item with two colons, and an
+  indented code block of configuration are no longer taken as YAML; a flat
+  YAML file piped in needs `--format yaml`. `kubectl … -o
   yaml`, Compose files, GitHub Actions, Ansible playbooks and Helm output are
   recognised as before.
 

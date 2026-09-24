@@ -209,17 +209,29 @@ with YAML front matter as Markdown — its body parses as a bare scalar. JSON is
 claimed only when the first token is `{` or `[` *and* strict parsing succeeds,
 so a bare `42` on stdin stays Markdown.
 
-Narrowed again after the third audit, by the spec owner's decision
-(2026-09-24, "conservative"): multiple documents and a flat top-level mapping
-are no longer signals at all, and input whose first content line is indented
-is never YAML. Spec §6.5 and §6.6 were revised to say so.
+**The rule as it stands** (after the fourth audit; spec §6.5 as revised
+2026-09-24 by the spec owner's "conservative" decision). Anonymous input is
+YAML only if every root is a non-empty collection, the first content line is
+not indented, no line opens an indented code block (four or more columns
+deeper after a blank line), and one of these is present:
 
-Narrowed after the second audit found Markdown lists claimed as YAML: "a
-container inside a container" was a signal, and `- Fast: written in Rust` is
-one. The signals are now a mapping under a mapping key, a mapping of two or
-more entries at depth > 0, multiple documents, directives, anchors, aliases
-and tags, or a flat top-level mapping of two or more entries whose keys have
-no spaces and whose values are not all phrases.
+- a `%YAML` or `%TAG` directive;
+- an anchor that an alias refers to;
+- a `!!` or verbatim `!<…>` tag, or any tag on a collection;
+- a mapping under a mapping key, or a mapping of two or more entries inside a
+  container — where no key on the way down contains a space and not every
+  value is a phrase.
+
+Not signals, each withdrawn after it claimed ordinary Markdown: several
+documents or a `---` marker, a flat top-level mapping, a lone anchor (`- &copy;`
+is an HTML entity), a local tag on a scalar (`- !important:`), a mapping made
+of phrases (a wrapped list item, an introduction over indented text). History:
+the second audit removed "a container inside a container", the third the flat
+mapping and multiple documents, the fourth the rest of that list.
+
+Input over 64 KiB is decided on its first 64 KiB (`probably_yaml`): a stream
+whose nesting first appears later stays Markdown, a documented limit of the
+probe that keeps a large Markdown file on stdin from being parsed as YAML.
 
 ### D12 — a *stated* format that fails to parse is an error; a *guess* falls back
 

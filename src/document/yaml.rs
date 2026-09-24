@@ -607,12 +607,17 @@ impl<'a> Loader<'a> {
             Self::byte_of(marker),
             error.info(),
         );
-        // A quote or a flow collection still open when the stream ends. A
-        // flow collection is also a commitment: prose opens quotes it never
-        // closes, but `b: [1, 2` is YAML (or JSON) syntax.
+        // A quote or a flow collection still open when the stream ends.
+        //
+        // A multi-line quoted scalar cut at a line break (`head -n`) is
+        // reported as bad indentation where the input ends rather than as an
+        // unclosed quote; at the very end it is the same thing.
+        let at_the_end = Self::byte_of(marker) >= self.source.text().trim_end().len();
         match error.kind() {
-            ErrorKind::UnclosedQuotedScalar => report.ran_out(),
-            ErrorKind::UnclosedFlowCollection { .. } => report.ran_out().commit(),
+            ErrorKind::UnclosedQuotedScalar | ErrorKind::UnclosedFlowCollection { .. } => {
+                report.ran_out()
+            }
+            ErrorKind::InvalidQuotedScalarIndent if at_the_end => report.ran_out(),
             _ => report,
         }
     }
@@ -846,29 +851,93 @@ pub fn is_confidently_yaml(doc: &StructuredDocument) -> bool {
     // flat top-level mapping (`Status: done` over `Owner: alice` is a note).
     // Both were tried, and both claimed ordinary Markdown; a flat YAML file
     // piped in needs `--format yaml`.
+    let aliased: std::collections::HashSet<&str> = doc
+        .nodes()
+        .iter()
+        .filter_map(|n| match &n.kind {
+            StructuredNodeKind::Alias { name } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     doc.nodes().iter().any(|node| {
-        // An anchor, an alias or an explicit tag.
-        if node.anchor().is_some()
-            || node.tag().is_some()
-            || matches!(node.kind, StructuredNodeKind::Alias { .. })
-        {
+        // An anchor some alias refers to. An anchor alone is `- &copy; 2024`,
+        // an HTML entity at the start of a list item.
+        if node.anchor().is_some_and(|a| aliased.contains(a)) {
             return true;
+        }
+        // A tag Markdown does not write: a `!!` core tag, a verbatim `!<…>`
+        // tag, or any tag on a collection. `- !important: read this` is a
+        // local tag on a scalar.
+        if let Some(tag) = node.tag() {
+            if tag.starts_with("!!") || tag.starts_with("!<") || node.is_container() {
+                return true;
+            }
         }
         // A mapping inside a container, in a shape a Markdown list cannot
         // take. `- Fast: written in Rust` is a one-entry mapping inside a
         // sequence, and `Pros:` over a list is a sequence inside a mapping —
         // both are ordinary Markdown. What prose does not write is a mapping
         // under a mapping key (`metadata:` over `name: web`), or a mapping of
-        // two entries or more inside anything (`- name: x` over `image: y`).
+        // two entries or more inside anything (`- name: x` over `image: y`) —
+        // provided no key involved has a space in it. Prose makes keys of
+        // phrases: a wrapped list item (`- Fix: …` over `  release notes: …`)
+        // or an introduction over an indented example (`Example config:`).
         if matches!(node.kind, StructuredNodeKind::Mapping) && node.depth > 0 {
             let under_a_key = node
                 .parent
                 .and_then(|p| doc.node(p))
                 .is_some_and(|p| matches!(p.kind, StructuredNodeKind::Mapping));
-            return under_a_key || node.child_count >= 2;
+            return (under_a_key || node.child_count >= 2)
+                && keys_are_identifiers(doc, node.id)
+                && not_all_phrases(doc, node.id);
         }
         false
     })
+}
+
+/// Whether a mapping holds something other than phrases: a collection, or a
+/// scalar that is a token (`nginx`, `actions/checkout@v4`, `3`). A wrapped
+/// list item makes a mapping whose every value is a clause of the sentence
+/// (`- Stack-Footprint: Keycloak, NATS, …` over `  Gegenmassnahme: …`).
+fn not_all_phrases(doc: &StructuredDocument, mapping: NodeId) -> bool {
+    doc.children(mapping).into_iter().any(|child| {
+        doc.node(child).is_some_and(|c| match c.scalar() {
+            None => true,
+            Some(v) => {
+                let text = v.text.trim();
+                !(v.style == ScalarStyle::Plain
+                    && v.kind == ScalarKind::String
+                    && (text.contains(char::is_whitespace)
+                        || text.ends_with(['.', '!', '?', '\u{2026}'])))
+            }
+        })
+    })
+}
+
+/// Whether a mapping's own keys, and every key on the way down to it, are
+/// free of spaces — the keys configuration uses, not the ones prose makes.
+fn keys_are_identifiers(doc: &StructuredDocument, mapping: NodeId) -> bool {
+    let plain_phrase = |id: NodeId| {
+        doc.node(id).and_then(|n| n.key()).is_some_and(|k| {
+            !k.complex && k.style == ScalarStyle::Plain && k.name().contains(char::is_whitespace)
+        })
+    };
+    if doc.children(mapping).into_iter().any(plain_phrase) {
+        return false;
+    }
+    let mut cur = Some(mapping);
+    let mut guard = 0usize;
+    while let Some(id) = cur {
+        if plain_phrase(id) {
+            return false;
+        }
+        cur = doc.node(id).and_then(|n| n.parent);
+        guard += 1;
+        if guard > doc.node_count() {
+            break;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
