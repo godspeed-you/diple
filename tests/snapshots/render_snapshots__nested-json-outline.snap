@@ -3,26 +3,26 @@ source: tests/render_snapshots.rs
 expression: text
 ---
 root
-  name: diple
-  version: 2.0.0
+  name: "diple"
+  version: "2.0.0"
   repository [fold]
-    type: git
-    url: https://github.com/godspeed-you…
+    type: "git"
+    url: "https://github.com/godspeed-you…"
     mirrors [fold]
-      primary: origin
+      primary: "origin"
       backup: null
   build [fold]
     features [fold]
-      [0]: syntax-onig
-      [1]: syntax-fancy
+      [0]: "syntax-onig"
+      [1]: "syntax-fancy"
     profile [fold]
       release [fold]
         lto: true
         codegen-units: 1
-        strip: symbols
+        strip: "symbols"
   keywords [fold]
-    [0]: markdown
-    [1]: pager
-    [2]: terminal
+    [0]: "markdown"
+    [1]: "pager"
+    [2]: "terminal"
   maintained: true
   downloads: 128947

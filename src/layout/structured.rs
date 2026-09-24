@@ -275,6 +275,13 @@ impl<'a> Builder<'a> {
         if multi {
             row.push("--- ", self.theme.structured.punctuation);
             row.push(&self.doc.label(node), self.theme.structured.key);
+            if self
+                .doc
+                .node(node)
+                .is_some_and(|n| n.anchor().is_some() || n.tag().is_some())
+            {
+                row.push(" ", Style::new());
+            }
         }
         self.value_part(&mut row, node, multi);
         self.finish_row(row, node);
@@ -498,29 +505,51 @@ impl<'a> Builder<'a> {
         match value.kind {
             // A string is quoted so that its type survives without colour,
             // and so that leading or trailing space is visible.
+            // A YAML scalar the source quoted keeps its quotes whatever a tag
+            // made of it: `!!int "42"` is not the same text as `!!int 42`.
             ScalarKind::String if self.quote_strings(value.style) => {
-                // Inside quotes the content has to be unambiguous: an
-                // unescaped quote would look like the end of the string, and
-                // a newline sanitised to a space would be indistinguishable
-                // from one the author typed (spec §9.5). Each dialect is
-                // escaped the way that dialect escapes: JSON and YAML's
-                // double-quoted style with backslashes, YAML's single-quoted
-                // style by doubling the quote, which is all it has. Escaping
-                // moves the bytes about, so the match offsets move with them.
-                let single = self.doc.kind() != DocumentKind::Json
-                    && value.style == ScalarStyle::SingleQuoted;
-                let quote = if single { "'" } else { "\"" };
-                let (escaped, moved) = if single {
-                    escape_single_quoted(shown, matches)
-                } else {
-                    escape_quoted(shown, matches)
-                };
-                row.push(quote, self.theme.structured.punctuation);
-                row.push_matched(&escaped, style, moved, 0);
-                row.push(quote, self.theme.structured.punctuation);
+                self.quoted_scalar(row, shown, value.style, style, matches);
+            }
+            _ if self.doc.kind() != DocumentKind::Json
+                && matches!(
+                    value.style,
+                    ScalarStyle::SingleQuoted | ScalarStyle::DoubleQuoted
+                ) =>
+            {
+                self.quoted_scalar(row, shown, value.style, style, matches);
             }
             _ => row.push_matched(shown, style, matches, 0),
         }
+    }
+
+    /// A scalar in the quotes its dialect and style call for.
+    fn quoted_scalar(
+        &mut self,
+        row: &mut Row,
+        shown: &str,
+        scalar_style: ScalarStyle,
+        style: Style,
+        matches: Vec<Match>,
+    ) {
+        // Inside quotes the content has to be unambiguous: an
+        // unescaped quote would look like the end of the string, and
+        // a newline sanitised to a space would be indistinguishable
+        // from one the author typed (spec §9.5). Each dialect is
+        // escaped the way that dialect escapes: JSON and YAML's
+        // double-quoted style with backslashes, YAML's single-quoted
+        // style by doubling the quote, which is all it has. Escaping
+        // moves the bytes about, so the match offsets move with them.
+        let single =
+            self.doc.kind() != DocumentKind::Json && scalar_style == ScalarStyle::SingleQuoted;
+        let quote = if single { "'" } else { "\"" };
+        let (escaped, moved) = if single {
+            escape_single_quoted(shown, matches)
+        } else {
+            escape_quoted(shown, matches)
+        };
+        row.push(quote, self.theme.structured.punctuation);
+        row.push_matched(&escaped, style, moved, 0);
+        row.push(quote, self.theme.structured.punctuation);
     }
 
     /// Whether a string of this style is shown with quotes.
@@ -1260,6 +1289,22 @@ mod tests {
             "*anc: 5",
         ] {
             assert!(yaml.iter().any(|r| r == row), "{row} in {yaml:?}");
+        }
+    }
+
+    /// A tag reads back as the source wrote it, set apart from what follows,
+    /// and does not take a quoted scalar's quotes away.
+    #[test]
+    fn tags_read_back_as_written() {
+        let src = "a: !<tag:x> v\nb: !!int \"42\"\nc: !custom 'q'\n---\n- 1\n--- !!map\nk: v\n";
+        let shown = rows("t.yaml", src, None);
+        for row in [
+            "  a: !<tag:x> v",
+            "  b: !!int \"42\"",
+            "  c: !custom 'q'",
+            "--- Document 3 !!map",
+        ] {
+            assert!(shown.iter().any(|r| r == row), "{row} in {shown:?}");
         }
     }
 

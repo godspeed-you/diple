@@ -133,7 +133,17 @@ impl StructuredDocument {
             StructuredNodeKind::Alias { name } => format!("{label}: *{name}"),
             StructuredNodeKind::Scalar(value) => {
                 let shown = preview(value.display());
-                if shown.is_empty() {
+                // Quoted where the rows quote it — every JSON string, a YAML
+                // scalar the source quoted — so the string "3" does not pass
+                // for the number 3 here either (spec P3).
+                let quote = match value.style {
+                    ScalarStyle::DoubleQuoted => Some('"'),
+                    ScalarStyle::SingleQuoted => Some('\''),
+                    _ => None,
+                };
+                if let Some(quote) = quote {
+                    format!("{label}: {quote}{shown}{quote}")
+                } else if shown.is_empty() {
                     label
                 } else {
                     format!("{label}: {shown}")

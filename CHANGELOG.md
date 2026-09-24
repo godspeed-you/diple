@@ -142,6 +142,12 @@ every key, every setting and every behaviour it had in 1.2.
   that `--format markdown` reads it as text. Prose that merely fails to parse
   as either still opens as Markdown.
 
+- **YAML tags and quoted values read back as the source wrote them.** A
+  verbatim tag lost its `!<…>` and read as part of the value, a tag on a
+  document's root ran into its `--- Document N` label, and `!!int "42"` lost
+  its quotes. The outline's previews now quote a string where the document
+  does, so the string `"3"` no longer passes for the number `3` there.
+
 ### Breaking
 
 - **The public Rust API changed.** The Markdown-specific AST is no longer the

@@ -639,7 +639,12 @@ impl<'a> Loader<'a> {
 
 /// A tag as the source wrote it: the handle it was written with plus its
 /// suffix, so `!!timestamp` and `!MyType` read back the way they were typed.
+/// A verbatim tag has no handle and keeps its `!<…>`, without which
+/// `!<tag:x> v` would read as the plain text `tag:x v`.
 fn tag_text(tag: &granit_parser::Tag) -> String {
+    if tag.original_handle().is_empty() {
+        return format!("!<{}{}>", tag.handle(), tag.suffix());
+    }
     format!("{}{}", tag.original_handle(), tag.suffix())
 }
 
