@@ -47,6 +47,11 @@ pub struct DocumentError {
     /// that happens to begin like one. Content detection reports such an
     /// error instead of falling back (spec §17.2).
     pub committed: bool,
+    /// Where the construct left open by input that ran out begins — the
+    /// quote or bracket — as a byte offset into the source, when the parser
+    /// could tell. Detection parses what precedes its line and reports the
+    /// error here.
+    pub open_at: Option<usize>,
 }
 
 impl DocumentError {
@@ -83,6 +88,7 @@ impl DocumentError {
             excerpt,
             incomplete: false,
             committed: false,
+            open_at: None,
         }
     }
 
@@ -100,6 +106,7 @@ impl DocumentError {
             excerpt: Vec::new(),
             incomplete: false,
             committed: false,
+            open_at: None,
         }
     }
 
@@ -107,6 +114,13 @@ impl DocumentError {
     /// [`DocumentError::incomplete`]).
     pub fn ran_out(mut self) -> Self {
         self.incomplete = true;
+        self
+    }
+
+    /// Record where the construct that was left open begins (see
+    /// [`DocumentError::open_at`]).
+    pub fn opened_at(mut self, byte: usize) -> Self {
+        self.open_at = Some(byte);
         self
     }
 

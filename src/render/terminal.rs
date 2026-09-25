@@ -249,11 +249,19 @@ impl StatusBar<'_> {
             // format label, which goes first, and then the message, which
             // is shortened; only a line too narrow for the name and the
             // counters loses the counters too.
-            let mut short = self.filename.to_string();
+            // §24.3 ranks the format above a message, so the message is what
+            // gets shortened or dropped first, and the label goes only when
+            // the name and the counters alone fill the line.
+            let room = width.saturating_sub(rw + 2);
+            let named = format!("{}  {}", self.filename, self.format);
+            let mut short = if unicode::width(&named) <= room {
+                named
+            } else {
+                self.filename.to_string()
+            };
             if let Some(m) = self.message.filter(|m| !m.is_empty()) {
                 short = format!("{short}  {m}");
             }
-            let room = width.saturating_sub(rw + 2);
             if unicode::width(self.filename) <= room {
                 let short = unicode::truncate_with_ellipsis(&short, room, ellipsis(self.unicode));
                 let pad = width - unicode::width(&short) - rw;
@@ -1027,7 +1035,7 @@ mod tests {
         bar.message = Some("no further heading at this level");
         let text = bar.text(80);
         assert!(text.ends_with("2%  11/388"), "{text:?}");
-        assert!(text.starts_with("docs/terminal-compatibility-checklist.md  no further"));
+        assert!(text.starts_with("docs/terminal-compatibility-checklist.md  Markdown  no"));
         assert_eq!(unicode::width(&text), 80);
     }
 

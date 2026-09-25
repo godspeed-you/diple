@@ -254,11 +254,17 @@ the second audit removed "a container inside a container", the third the flat
 mapping and multiple documents, the fourth the rest of that list.
 
 Input over 64 KiB is probed on its first 64 KiB (`probably_yaml`): a prefix
-that parses without a signal settles it as Markdown, a documented limit that
-keeps a large Markdown file on stdin from being parsed as YAML; a prefix that
-does not parse earns the full parse. Truncation (`yaml_cut_short`) finds the
-last line that opens a quote or bracket and leaves it open by scanning, and
-parses only what precedes it once — no length limit, one parse.
+in which no document shows a signal settles it as Markdown (any document
+will do there: the cut leaves the last one short); a prefix that does not
+parse earns the full parse. Truncation (`yaml_cut_short`) takes the
+construct from the parser — `DocumentError::open_at`, the start of an
+unclosed quote or flow collection, or for a `head -n` cut or a `\` escape at
+the end the first quote or bracket after the last completed event — parses
+what precedes its line (following an outer open flow collection outwards if
+that fails), and requires both that prefix and the construct's own document
+to be confidently YAML. A line scanner used for a while (`86ea1b6`) was
+replaced: it mistook closed quotes for open ones, missed tagged ones, and was
+quadratic on long lines.
 
 ### D12 — a *stated* format that fails to parse is an error; a *guess* falls back
 

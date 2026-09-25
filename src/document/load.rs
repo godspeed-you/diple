@@ -207,123 +207,87 @@ fn probably_yaml(source: &SourceDocument) -> bool {
         return true;
     };
     let prefix = SourceDocument::new(source.name(), &text[..cut + 1]);
+    // Any signal in the prefix earns the full parse: with several documents
+    // the cut leaves the last one short, and the rule that every document
+    // needs a signal of its own is for the whole input to meet.
     match yaml::parse(&prefix) {
-        Ok(doc) => yaml::is_confidently_yaml(&doc),
+        Ok(doc) => yaml::shows_a_signal(&doc),
         Err(_) => true,
     }
 }
 
-/// Whether a YAML parse failure is a YAML stream that was cut short: the
-/// lines before the failing one are a stream detection would claim, and the
-/// parser ran out inside an unclosed quote or bracket. Prose fails too (`'Tis the season` never closes its
-/// quote), which is why what came before has to be confidently YAML; an open
-/// flow collection needs only a mapping or sequence before it, because prose
-/// does not write `b: [1, 2`.
+/// Whether a YAML parse failure is a YAML stream that was cut short, and if
+/// so the error to report: the parser ran out inside a quote or bracket it
+/// can place (`DocumentError::open_at`), and the lines before that one are a
+/// stream detection would claim.
 fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> Option<DocumentError> {
-    // Only a construct the parser saw left open. A break on the last line
-    // was tried as a signal too, and refused ordinary notes — `Name: Alice`
-    // over `Role: Admin` over a closing `Thanks!` — with exit 1; and so did
-    // accepting an open bracket after any mapping (`Status: draft` over
-    // `[TODO: fill in`). What comes before has to be confidently YAML.
+    // Only a construct the parser saw left open, and only after lines that
+    // are confidently YAML. A break on the last line was tried as a signal,
+    // and refused ordinary notes — `Name: Alice` over `Role: Admin` over a
+    // closing `Thanks!` — with exit 1; so did accepting an open bracket after
+    // any mapping (`Status: draft` over `[TODO: fill in`); and so did
+    // guessing the construct by scanning lines, which mistook closed quotes
+    // for open ones, missed tagged ones, and took quadratic time.
     if !error.incomplete {
         return None;
     }
-    let (line, column, what) = open_construct(source.text())?;
     let text = source.text();
-    let start = text
-        .match_indices('\n')
-        .nth(line.checked_sub(2)?)
-        .map(|(at, _)| at + 1)?;
-    let prefix = yaml::parse(&SourceDocument::new(source.name(), &text[..start])).ok()?;
+    let mut open_at = error.open_at?.min(text.len());
+    // A construct can sit inside another one that is open too — a quoted
+    // item inside `command: [` — and then the lines before it end inside
+    // that outer one. Parsing them reports the outer construct, so follow
+    // those reports outwards until what precedes one parses.
+    let prefix = loop {
+        let line_start = text[..open_at].rfind('\n').map_or(0, |at| at + 1);
+        if line_start == 0 {
+            return None;
+        }
+        match yaml::parse(&SourceDocument::new(source.name(), &text[..line_start])) {
+            Ok(prefix) => break prefix,
+            Err(outer) => match outer.open_at {
+                Some(at) if outer.incomplete && at < open_at => open_at = at,
+                _ => return None,
+            },
+        }
+    };
     if !yaml::is_confidently_yaml(&prefix) {
         return None;
+    }
+    // The document the construct is in has to be YAML by itself, as every
+    // document of a stream has to (§6.5): front matter over Markdown that
+    // starts `[PR #768](…)` is a confident first document and a second one
+    // that is nothing but an open bracket.
+    let line_start = text[..open_at].rfind('\n').map_or(0, |at| at + 1);
+    let document_start = text[..line_start]
+        .match_indices('\n')
+        .map(|(at, _)| at + 1)
+        .chain(std::iter::once(0))
+        .filter(|&at| {
+            let line = text[at..].lines().next().unwrap_or("");
+            line == "---" || line.starts_with("--- ")
+        })
+        .max()
+        .map_or(0, |at| at + text[at..].find('\n').map_or(0, |n| n + 1));
+    if document_start > 0 {
+        let own = SourceDocument::new(source.name(), &text[document_start..line_start]);
+        if !yaml::parse(&own).is_ok_and(|doc| yaml::is_confidently_yaml(&doc)) {
+            return None;
+        }
     }
     // Point at the quote or bracket that was never closed, not wherever the
     // parser gave up — for a quoted value cut at a line break that is a line
     // past the end of the input, with nothing to put a caret under.
-    Some(DocumentError::at_line_col(
+    let what = if text[open_at..].starts_with(['[', '{']) {
+        "the bracket"
+    } else {
+        "the quote"
+    };
+    Some(DocumentError::at(
         source,
         DocumentKind::Yaml,
-        line,
-        column,
+        open_at,
         format!("{what} opened here is never closed"),
     ))
-}
-
-/// The last quote or bracket that opens a value and is still open at the end
-/// of its line — the construct a cut-off YAML stream was in the middle of —
-/// as a 1-based line, a 1-based column, and what it is.
-///
-/// A value opens where a line's content starts, after `- `, or after `: `.
-/// Found by scanning, not by re-parsing ever shorter prefixes: one parse of
-/// what precedes it is all [`yaml_cut_short`] needs, however long the quoted
-/// value is.
-fn open_construct(text: &str) -> Option<(usize, usize, &'static str)> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    for (index, line) in lines.iter().enumerate().rev() {
-        if let Some((column, what)) = opens_and_stays_open(line) {
-            return Some((index + 1, column, what));
-        }
-    }
-    None
-}
-
-/// Where on `line` a value opens with a quote or bracket that the line does
-/// not close, if one does.
-fn opens_and_stays_open(line: &str) -> Option<(usize, &'static str)> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = chars.iter().take_while(|c| **c == ' ').count();
-    while chars.get(i) == Some(&'-') && chars.get(i + 1) == Some(&' ') {
-        i += 2;
-        while chars.get(i) == Some(&' ') {
-            i += 1;
-        }
-    }
-    // Candidate value starts: the content start, and after every `: `.
-    let mut starts = vec![i];
-    for k in i..chars.len().saturating_sub(1) {
-        if chars[k] == ':' && chars[k + 1] == ' ' {
-            let mut v = k + 1;
-            while chars.get(v) == Some(&' ') {
-                v += 1;
-            }
-            starts.push(v);
-        }
-    }
-    for &at in starts.iter().rev() {
-        let open = match chars.get(at) {
-            Some('"') => {
-                let mut escaped = false;
-                !chars[at + 1..].iter().any(|&c| {
-                    let close = c == '"' && !escaped;
-                    escaped = c == '\\' && !escaped;
-                    close
-                })
-            }
-            Some('\'') => chars[at + 1..].iter().filter(|&&c| c == '\'').count() % 2 == 0,
-            Some('[' | '{') => {
-                let mut depth = 0i32;
-                for &c in &chars[at..] {
-                    match c {
-                        '[' | '{' => depth += 1,
-                        ']' | '}' => depth -= 1,
-                        _ => {}
-                    }
-                }
-                depth > 0
-            }
-            _ => false,
-        };
-        if open {
-            let what = if matches!(chars[at], '[' | '{') {
-                "the bracket"
-            } else {
-                "the quote"
-            };
-            return Some((at + 1, what));
-        }
-    }
-    None
 }
 
 /// A parse error in input that is clearly that format, with the reason
@@ -474,6 +438,9 @@ mod tests {
             "# Config\n\n    server:\n      port: 80\n",
             "# Setup\n\nExample config:\n\n    server:\n      port: 80\n",
             "Example:\n\n    server:\n      port: 80\n",
+            // Front matter over Markdown that opens with a link: the
+            // bracket is a document of its own, and not a YAML one.
+            "---\ntitle: Notes\nparams:\n  toc: true\n---\n[PR #768](https://example.com/pr) fixes it, reported in\n[issue](https://example.com/i).\n",
             // An open bracket after lines that are not confidently YAML.
             "a: 1\nb: [1, 2",
             "- buy milk\n- call mom\n\n[later: the rest of the list\n",
@@ -572,6 +539,62 @@ mod tests {
             .expect_err("cut inside the quote");
         assert_eq!(error.position.map(|p| (p.line, p.column)), Some((3, 9)));
         assert!(error.report().contains('^'), "{}", error.report());
+    }
+
+    /// The error points at the construct the parser left open — past a tag
+    /// or an anchor, inside an open flow collection, after a `\` line
+    /// continuation — and nothing else that fails at the end is reported.
+    #[test]
+    fn a_cut_is_reported_where_its_construct_opened() {
+        const HEAD: &str =
+            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\n  labels:\n    app: web\n";
+        for (tail, line, column) in [
+            // A tagged quote cut by `head -n`.
+            (
+                "spec:\n  value: !Sub \"arn:${AWS::Region}\n    more\n",
+                8,
+                15,
+            ),
+            // An anchored bracket cut by bytes.
+            ("spec:\n  list: &l [a, b,", 8, 12),
+            // A quoted item inside an open flow collection: the bracket.
+            (
+                "spec:\n  command: [\"sh\", \"-c\",\n    \"echo starting &&\n",
+                8,
+                12,
+            ),
+            // A `\` line continuation cut right after the backslash.
+            ("spec:\n  note: \"first part and\\", 8, 9),
+        ] {
+            let text = format!("{HEAD}{tail}");
+            let error =
+                load(FormatRequest::Auto, SourceDocument::new("<stdin>", &text)).expect_err(&text);
+            assert_eq!(
+                error.position.map(|p| (p.line, p.column)),
+                Some((line, column)),
+                "{text:?}"
+            );
+        }
+        // A closed multi-line quote followed by a line prose also writes.
+        let text = "Notes:\n  Owner: alice\n  Summary: \"one\n    two\"\n-\n";
+        let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", text)).unwrap();
+        assert_eq!(d.format, DocumentKind::Markdown);
+    }
+
+    /// The probe asks only whether a large input's start shows a signal: the
+    /// cut leaves the last document of a stream short of its nesting.
+    #[test]
+    fn a_large_multi_document_stream_is_detected() {
+        let mut text = String::new();
+        let mut n = 0;
+        while text.len() < 2 * PROBE_BYTES {
+            text.push_str(&format!(
+                "---\napiVersion: v1\nkind: Service\nmetadata:\n  name: s{n}\n  labels:\n    app: web\nspec:\n  ports:\n  - port: 80\n    protocol: TCP\n"
+            ));
+            n += 1;
+        }
+        let d = load(FormatRequest::Auto, SourceDocument::new("<stdin>", &text)).unwrap();
+        assert_eq!(d.format, DocumentKind::Yaml);
     }
 
     /// Spec §17.2: input that had already read a member name or a comma is a

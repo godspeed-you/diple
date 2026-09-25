@@ -190,6 +190,9 @@ struct Loader<'a> {
     /// While a collection is being used as a mapping key, how deep we are
     /// inside it and where it started.
     complex_key: Option<(usize, usize)>,
+    /// Where the last event the parser completed ends: what follows it is
+    /// the construct a failure is in.
+    last_event_end: usize,
 }
 
 impl<'a> Loader<'a> {
@@ -207,6 +210,7 @@ impl<'a> Loader<'a> {
             pending_right: None,
             last_node: None,
             complex_key: None,
+            last_event_end: 0,
         }
     }
 
@@ -219,6 +223,7 @@ impl<'a> Loader<'a> {
             let start = span.start.byte_offset().unwrap_or(0);
             let end = span.end.byte_offset().unwrap_or(start);
             let range = SourceSpan::new(start, end);
+            self.last_event_end = self.last_event_end.max(end);
 
             // A collection used as a mapping key is consumed as source text:
             // there is no honest way to show `[1, 2]: x` other than as it was
@@ -607,20 +612,44 @@ impl<'a> Loader<'a> {
             Self::byte_of(marker),
             error.info(),
         );
-        // A quote or a flow collection still open when the stream ends.
-        //
-        // A multi-line quoted scalar cut at a line break (`head -n`) is
-        // reported as bad indentation where the input ends rather than as an
-        // unclosed quote; at the very end it is the same thing.
-        let at_the_end = Self::byte_of(marker) >= self.source.text().trim_end().len();
+        // A quote or a flow collection still open when the stream ends:
+        // granit reports those where they open. A multi-line quoted scalar
+        // cut at a line break (`head -n`) is reported as bad indentation, and
+        // one cut right after a `\` line continuation as an unknown escape,
+        // both where the input ends; there the construct is the first quote
+        // or bracket after the last event the parser finished. Nothing else
+        // counts as running out: a failure at the end is also what prose
+        // produces.
+        let at = Self::byte_of(marker);
+        let text = self.source.text();
+        let at_the_end = at >= text.trim_end().len();
+        let after_last_event = || {
+            let from = self.last_event_end.min(text.len());
+            text[from..]
+                .find(['"', '\'', '[', '{'])
+                .map(|offset| from + offset)
+        };
         match error.kind() {
             ErrorKind::UnclosedQuotedScalar | ErrorKind::UnclosedFlowCollection { .. } => {
-                report.ran_out()
+                report.ran_out().opened_at(at)
             }
-            // Anything else that breaks exactly where the input ends — an
-            // escape, an alias or an item left without its rest — ran out
-            // as well; detection still asks what came before.
-            _ if at_the_end => report.ran_out(),
+            ErrorKind::InvalidQuotedScalarIndent if at_the_end => match after_last_event() {
+                Some(open) => report.ran_out().opened_at(open),
+                None => report,
+            },
+            // Reported at the quote that holds the escape; it ran out only if
+            // the input ends on the backslash.
+            ErrorKind::UnknownQuotedScalarEscape if text.trim_end().ends_with('\\') => {
+                let open = if text[at..].starts_with(['"', '\'']) {
+                    Some(at)
+                } else {
+                    after_last_event()
+                };
+                match open {
+                    Some(open) => report.ran_out().opened_at(open),
+                    None => report,
+                }
+            }
             _ => report,
         }
     }
@@ -909,6 +938,25 @@ fn document_text_is_blank(doc: &StructuredDocument, root: NodeId) -> bool {
         let line = line.trim();
         line.is_empty() || line == "---" || line == "..."
     })
+}
+
+/// Whether any document of the stream shows a strong signal — the question
+/// for a prefix of a large input, whose last document the cut may have left
+/// without the nesting it goes on to have. The full input then answers
+/// [`is_confidently_yaml`].
+pub fn shows_a_signal(doc: &StructuredDocument) -> bool {
+    if doc.roots().iter().any(|r| !r.directives.is_empty()) {
+        return true;
+    }
+    let aliased: std::collections::HashSet<&str> = doc
+        .nodes()
+        .iter()
+        .filter_map(|n| match &n.kind {
+            StructuredNodeKind::Alias { name } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    document_has_signal(doc, doc.nodes(), &aliased)
 }
 
 /// Whether one document's nodes show structure prose does not write.

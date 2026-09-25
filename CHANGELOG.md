@@ -162,8 +162,9 @@ every key, every setting and every behaviour it had in 1.2.
     breaks after an object's first member name (`{"broken": }`);
   - YAML that a stream detection would claim runs into, and that the input
     leaves inside an unclosed quote or bracket — including a multi-line quoted
-    value of any length cut at a line break by `head -n`. The error points at
-    the quote or bracket that was never closed.
+    value of any length cut at a line break by `head -n`, and one cut right
+    after a `\` line continuation. The error points at the quote or bracket
+    that was never closed.
   Prose that merely fails to parse as either still opens as Markdown.
 
 - **YAML tags and quoted values read back as the source wrote them.** A
