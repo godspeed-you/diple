@@ -11,7 +11,7 @@ at the top for work that has not shipped yet.
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-09-18 — Structured Documents
+## [2.0.0] - 2026-09-25 — Structured Documents
 
 diple is now `less` for structured documents. JSON and YAML join Markdown as
 first-class semantic document formats with navigation, folding, search, paths
