@@ -263,8 +263,10 @@ fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> Option<Docu
         .map(|(at, _)| at + 1)
         .chain(std::iter::once(0))
         .filter(|&at| {
+            // `---` opens a document and `...` ends one; either way what
+            // follows is a document of its own.
             let line = text[at..].lines().next().unwrap_or("");
-            line == "---" || line.starts_with("--- ")
+            line == "---" || line.starts_with("--- ") || line.trim_end() == "..."
         })
         .max()
         .map_or(0, |at| at + text[at..].find('\n').map_or(0, |n| n + 1));
@@ -438,6 +440,12 @@ mod tests {
             "# Config\n\n    server:\n      port: 80\n",
             "# Setup\n\nExample config:\n\n    server:\n      port: 80\n",
             "Example:\n\n    server:\n      port: 80\n",
+            // A closed quote with a bad escape, and text that ends in a
+            // Markdown hard break.
+            "---\ntitle: Notes\nparams:\n  toc: true\n  dir: \"C:\\docs\"\n---\n\nFirst line\\\nsecond line\\\n",
+            "Environment:\n  OS: Windows\n  Shell: pwsh\nPath: \"C:\\data\\diple\"\nThanks,\\\n",
+            // A document ended by `...` and a bracket after it.
+            "Notes:\n  owner: alice\n  due: friday\n...\n[draft\n",
             // Front matter over Markdown that opens with a link: the
             // bracket is a document of its own, and not a YAML one.
             "---\ntitle: Notes\nparams:\n  toc: true\n---\n[PR #768](https://example.com/pr) fixes it, reported in\n[issue](https://example.com/i).\n",

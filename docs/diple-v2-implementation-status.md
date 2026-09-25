@@ -12,7 +12,7 @@ the commit after it, on `main`, 2026-09-18
 **This section is the only part of this file that is about the future. Delete
 it when the item below is done.**
 
-### Six independent audits ran; fix, then audit a seventh time
+### Seven independent audits ran; fix, then audit an eighth time
 
 **First audit** (2026-09-24, at `128fc52`): AC-09, AC-10, AC-17 and AC-18
 failed, plus smaller defects. Fixed in `fb90aba`..`34b6fa7`.
@@ -74,7 +74,14 @@ and a line scanner for the open construct missed tagged and nested ones,
 misplaced errors and was quadratic. Fixed in `4ae31ee` by taking the
 construct from the parser.
 
-**A seventh audit** checks `4ae31ee`.
+**Seventh audit** (2026-09-25, at `0067179`): 22 of 23 VERIFIED. AC-17
+failed on one narrow regression from `4ae31ee`: a *closed* quote with an
+invalid escape (`"C:\docs"`) plus input ending in `\` (a Markdown hard
+break) was reported as a quote never closed, exit 1. Fixed: the escape case
+counts as running out only when that very quote is still open at the end.
+Also: `...` now ends a document for the own-document rule, as `---` does.
+
+**An eighth audit** checks this fix, narrowly (AC-17 and regressions).
 
 Any mandatory criterion that is not VERIFIED means the release is not
 complete.

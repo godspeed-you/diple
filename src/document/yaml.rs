@@ -637,18 +637,14 @@ impl<'a> Loader<'a> {
                 Some(open) => report.ran_out().opened_at(open),
                 None => report,
             },
-            // Reported at the quote that holds the escape; it ran out only if
-            // the input ends on the backslash.
-            ErrorKind::UnknownQuotedScalarEscape if text.trim_end().ends_with('\\') => {
-                let open = if text[at..].starts_with(['"', '\'']) {
-                    Some(at)
-                } else {
-                    after_last_event()
-                };
-                match open {
-                    Some(open) => report.ran_out().opened_at(open),
-                    None => report,
-                }
+            // Reported at the quote that holds the escape. It ran out only if
+            // that very quote is still open where the input ends, on the
+            // backslash: `"C:\docs"` is a closed quote with a bad escape, and
+            // a Markdown hard break at the end of the text does not open it.
+            ErrorKind::UnknownQuotedScalarEscape
+                if text.trim_end().ends_with('\\') && quote_runs_to_the_end(text, at) =>
+            {
+                report.ran_out().opened_at(at)
             }
             _ => report,
         }
@@ -673,6 +669,24 @@ impl<'a> Loader<'a> {
     fn byte_of(marker: &Marker) -> usize {
         marker.byte_offset().unwrap_or(marker.index())
     }
+}
+
+/// Whether the double-quoted scalar opening at byte `at` has no closing
+/// quote before the end of `text` — a backslash escapes the character after
+/// it, so `\"` does not close it.
+fn quote_runs_to_the_end(text: &str, at: usize) -> bool {
+    if !text[at..].starts_with('"') {
+        return false;
+    }
+    let mut escaped = false;
+    for c in text[at + 1..].chars() {
+        match c {
+            '"' if !escaped => return false,
+            '\\' => escaped = !escaped,
+            _ => escaped = false,
+        }
+    }
+    true
 }
 
 /// A tag as the source wrote it: the handle it was written with plus its
