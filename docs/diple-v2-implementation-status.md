@@ -12,7 +12,7 @@ the commit after it, on `main`, 2026-09-18
 **This section is the only part of this file that is about the future. Delete
 it when the item below is done.**
 
-### Seven independent audits ran; fix, then audit an eighth time
+### Eight independent audits ran; fix, then audit a ninth time
 
 **First audit** (2026-09-24, at `128fc52`): AC-09, AC-10, AC-17 and AC-18
 failed, plus smaller defects. Fixed in `fb90aba`..`34b6fa7`.
@@ -81,7 +81,16 @@ break) was reported as a quote never closed, exit 1. Fixed: the escape case
 counts as running out only when that very quote is still open at the end.
 Also: `...` now ends a document for the own-document rule, as `---` does.
 
-**An eighth audit** checks this fix, narrowly (AC-17 and regressions).
+**Eighth audit** (2026-09-25, at `85d0e7c`): the closed-quote fix holds,
+but a raw panic from `4ae31ee`, missed by the seventh audit: a construct on
+a `--- ` line itself (`--- [a,` over further lines, cut) sliced past its own
+line in `yaml_cut_short`. Fixed: only lines before the construct's own line
+are scanned for markers, a construct on a marker line has an empty document
+before it and falls back, and markers followed by a tab or a comment count.
+Two fuzz seeds now reach the path; `format_detect` ran 3.5 million inputs
+without a panic.
+
+**A ninth audit** checks this fix, narrowly.
 
 Any mandatory criterion that is not VERIFIED means the release is not
 complete.

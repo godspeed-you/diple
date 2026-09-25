@@ -258,18 +258,21 @@ fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> Option<Docu
     // starts `[PR #768](…)` is a confident first document and a second one
     // that is nothing but an open bracket.
     let line_start = text[..open_at].rfind('\n').map_or(0, |at| at + 1);
-    let document_start = text[..line_start]
-        .match_indices('\n')
-        .map(|(at, _)| at + 1)
-        .chain(std::iter::once(0))
-        .filter(|&at| {
-            // `---` opens a document and `...` ends one; either way what
-            // follows is a document of its own.
-            let line = text[at..].lines().next().unwrap_or("");
-            line == "---" || line.starts_with("--- ") || line.trim_end() == "..."
-        })
-        .max()
-        .map_or(0, |at| at + text[at..].find('\n').map_or(0, |n| n + 1));
+    // A construct on a marker line (`--- [a,`) opens a document with nothing
+    // of its own before it.
+    if is_document_marker(text[line_start..].lines().next().unwrap_or("")) {
+        return None;
+    }
+    // Only the lines before the construct's own line are looked at, so the
+    // start found can never pass it.
+    let mut document_start = 0;
+    let mut at = 0;
+    for line in text[..line_start].split_inclusive('\n') {
+        at += line.len();
+        if is_document_marker(line.trim_end_matches(['\n', '\r'])) {
+            document_start = at;
+        }
+    }
     if document_start > 0 {
         let own = SourceDocument::new(source.name(), &text[document_start..line_start]);
         if !yaml::parse(&own).is_ok_and(|doc| yaml::is_confidently_yaml(&doc)) {
@@ -290,6 +293,17 @@ fn yaml_cut_short(source: &SourceDocument, error: &DocumentError) -> Option<Docu
         open_at,
         format!("{what} opened here is never closed"),
     ))
+}
+
+/// Whether a line is a YAML document marker: `---` opens a document and
+/// `...` ends one, each alone or followed by whitespace (and then content or a
+/// comment, as `--- !!map` or `... # end`). Either way, what follows is a
+/// document of its own.
+fn is_document_marker(line: &str) -> bool {
+    ["---", "..."].iter().any(|marker| {
+        line.strip_prefix(marker)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
+    })
 }
 
 /// A parse error in input that is clearly that format, with the reason
@@ -444,6 +458,13 @@ mod tests {
             // Markdown hard break.
             "---\ntitle: Notes\nparams:\n  toc: true\n  dir: \"C:\\docs\"\n---\n\nFirst line\\\nsecond line\\\n",
             "Environment:\n  OS: Windows\n  Shell: pwsh\nPath: \"C:\\data\\diple\"\nThanks,\\\n",
+            // A construct on the marker line itself: a document with
+            // nothing before it. This used to panic.
+            "server:\n  host: example.com\n  port: 8080\n--- [a,\n  b,\n",
+            "server:\n  host: example.com\n  port: 8080\n--- \"quoted\n  more\n",
+            // Markers followed by a comment or a tab.
+            "Notes:\n  owner: alice\n  due: friday\n... # end\n[draft\n",
+            "Notes:\n  owner: alice\n  due: friday\n---\t\n[draft\n",
             // A document ended by `...` and a bracket after it.
             "Notes:\n  owner: alice\n  due: friday\n...\n[draft\n",
             // Front matter over Markdown that opens with a link: the
