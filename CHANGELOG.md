@@ -13,218 +13,57 @@ at the top for work that has not shipped yet.
 
 ## [2.0.0] - 2026-09-25 — Structured Documents
 
-diple is now `less` for structured documents. JSON and YAML join Markdown as
-first-class semantic document formats with navigation, folding, search, paths
-and outlines.
+diple now supports JSON and YAML as first-class document formats alongside
+Markdown. Navigation, folding, search and the outline operate on the document's
+semantic structure instead of merely highlighting its syntax.
 
-This is one reader that learned what a document can be, not two parsers bolted
-to the side of a Markdown viewer. diple does not syntax-highlight JSON and
-YAML: it parses them, and everything the reader already did — `]` to the next
-piece of structure, `za` to fold it away, `/` to search, `t` for the outline —
-now operates on whichever semantic nodes the open document has. Markdown keeps
-every key, every setting and every behaviour it had in 1.2.
+### Highlights
 
-### Added
-
-- **JSON and YAML as document formats.** `diple response.json` and `diple
-  deployment.yaml` open natively, and so do `kubectl get deployment nginx -o
-  yaml | diple` and `curl -s … | diple`. The format is decided by `--format`
-  first, then the file name (`.json`, `.yaml`, `.yml`), then a confident look
-  at the content, and finally Markdown — which is where prose, a bare scalar
-  and anything ambiguous stay, because a reader's prose must never be claimed
-  by a permissive parser. A format *stated* by `--format` or by the file name
-  is binding: a `config.yaml` that does not parse is a YAML error naming the
-  line, the column and the offending source, with a non-zero exit, rather than
-  a Markdown document that looks almost right. A format merely *guessed* from
-  anonymous input falls back to Markdown, since nothing had claimed it —
-  unless the input is unmistakably JSON or YAML that was cut short or broken,
-  which is reported like a stated format's error (see *Fixed*).
-- **Structure navigation in JSON and YAML.** `]` and `[` walk the containers —
-  objects, arrays, mappings and sequences — exactly as they walk headings in
-  Markdown; scalars are not stops, so `]` on a long array is not another `j`.
-  `}` and `{` move between siblings and climb out of a finished branch, the
-  same "same or higher level" rule Markdown has always used.
-- **`H` and `L`** (`parent_node`, `first_child`) move out to the enclosing node
-  and in to the first node inside. `h` and `l` scroll sideways; their shifted
-  forms move the same axis one level up. Both keys were unbound before, so no
-  existing binding changed meaning, and both are rebindable in `[keys]` and
-  listed in `?` and the key hints like every other action.
-- **Semantic folding for structured documents.** Every container folds with
-  `za`, `zc`, `zo`, `Enter`, `zM` and `zR`, and a collapsed one says what it
-  holds: `{4 members}`, `{4 entries}`, `[3 items]`. The document root is not a
-  fold target — collapsing it would replace the shape of the file with a single
-  brace.
-- **The path of the selected node** in the status line — `spec › containers ›
-  [0] › image` — so a deeply nested value is never anonymous. `--path
-  <auto|always|never>` and `structured.path` decide when it is shown; the
-  status line also names the format it read.
-- **An outline for structured documents.** `t` opens one entry per node, with
-  scalar values previewed and trimmed, built the first time it is opened.
-- **Search over every field of a node.** A hit may be in a key, a value, or a
-  YAML comment, tag or anchor name, and the right run is highlighted; jumping
-  to a hidden match still expands the collapsed ancestors that hide it.
-- **YAML read as a reader needs it**, not as a deserializer leaves it:
-  comments, anchors, tags, `%YAML`/`%TAG` directives, block, flow and quoted
-  scalar styles and multi-document streams all survive into the view. An alias
-  is shown as `*name` and never expanded — the honest reading, and the one that
-  makes an alias bomb cost what the source costs — and a merge key (`<<`) is
-  shown rather than performed. Types follow the YAML 1.2 core schema.
-- **JSON read strictly** — RFC 8259 and nothing else, parsed by diple itself so
-  that source order, duplicate keys, the lexical spelling of numbers (`1e6`
-  stays `1e6`) and byte spans all survive. Duplicate keys are kept and both
-  shown: a DOM that keeps the last one silently deletes part of the document.
-  Comments and trailing commas are refused, and `.jsonc` is deliberately not a
-  recognised extension.
-- **New options.** `--format <auto|markdown|json|yaml>`, `--structured-indent
-  <COLUMNS>`, `--path <auto|always|never>`, the top-level `format` key and a
-  `[structured]` section (`indent = 2`, `path = "auto"`, `show_indices = true`,
-  `collapsed_summary = true`). Every one has a default that needs no
-  configuration, and all of them are settable at `:` and completed by `Tab`.
-- **Long keys and scalars follow `wrap`** like any other content: a value too
-  wide for the terminal wraps with its continuation indented past its key, so
-  the pair still reads as a pair, and `--no-wrap` leaves the row full width for
-  `h`/`l`. A row whose own indentation has already filled the terminal is left
-  long either way, because wrapping it would give mostly blank margin. A
-  quoted scalar is escaped the way its own dialect escapes, so what is between
-  the quotes is never ambiguous and an embedded newline is visible rather than
-  flattened to a space.
-- **A `DOCUMENT FORMATS` section in the man page**, and the shell completions
-  now offer the new options and their values.
-
-### Changed
-
-- The product is an interactive terminal reader for **structured documents**;
-  the crate description, keywords and the Debian, RPM and Arch package
-  descriptions say so. `tui` and `mermaid` gave way to `json` and `yaml` in the
-  crates.io keywords, which are capped at five.
-- Non-interactive output covers the new formats: a piped JSON or YAML document
-  is written as plain text, fully expanded and in source order, so `diple
-  response.json | head -20` is readable and reproducible. Minified JSON is
-  never printed back.
-- Tabs and splits are format-independent: `:open` detects a format exactly the
-  way the command line does, so a Markdown document and a YAML document can
-  sit side by side in one session.
-- The help overlay and the key hints follow the open document's capabilities —
-  the link keys are offered where links exist, the structure keys where
-  structure does, and an action that cannot apply says so rather than doing
-  nothing.
-
-- In Markdown, `{`, `}` and a jump from the outline now put the heading on
-  the same screen row as `[` and `]` do — with the same context above it —
-  where 1.x placed it one row lower. Every way of going to a heading now
-  lands in the same place.
-
-- In Markdown output a tab inside a paragraph or a table cell, and a line
-  break inside inline HTML, now read as a space; 1.x dropped them, running the
-  words on either side together. Both follow from the sanitising below.
+- Open JSON and YAML files directly or pipe them into diple. The format is
+  detected automatically and can be selected explicitly with
+  `--format <auto|markdown|json|yaml>`.
+- Navigate and fold objects, arrays, mappings and sequences using the familiar
+  structure keys. `H` and `L` move to the parent or first child.
+- See the selected node's path in the status line and browse the complete
+  document structure with the outline (`t`).
+- Search covers keys, values and YAML metadata. Hidden matches are revealed
+  without unnecessarily expanding unrelated branches.
+- YAML comments, anchors, tags, directives and multi-document streams are
+  preserved. JSON is parsed strictly while retaining source order, duplicate
+  keys and the original spelling of numbers.
+- Structured documents also work with tabs, splits, `:open` and non-interactive
+  output.
+- New settings control format detection, indentation, path display, array
+  indices and collapsed summaries. Existing defaults work without additional
+  configuration.
 
 ### Fixed
 
-- **A Markdown document can no longer send escape sequences to the
-  terminal.** Text in headings, paragraphs, lists, tables, quotes, footnotes
-  and code blocks reached the output unfiltered, so a hostile file could set
-  the window title, recolour the screen or — through the text of a link in a
-  terminal with OSC 8 hyperlinks — reset the terminal outright. Markdown text
-  now goes through the same sanitising JSON and YAML already did: controls,
-  C1 characters and bidirectional overrides are drawn as `U+FFFD`, in the
-  pager and in piped output alike. 1.x behaved the same way.
+- Markdown content is sanitised before reaching the terminal, preventing
+  embedded control and escape sequences from affecting the terminal.
+- Cancelling or changing a search now restores folds, cursor and viewport
+  correctly.
+- Invalid or truncated JSON and YAML produce useful parse errors instead of
+  being silently displayed as Markdown when the input clearly indicates a
+  structured format.
+- Improved rendering of unusual keys, YAML tags and quoted values, JSON files
+  with a UTF-8 byte-order mark, and whitespace in Markdown.
+- More conservative YAML detection prevents Markdown containing colons, lists
+  or front matter from being misclassified.
 
-- **A search opens only the path to the match it lands on.** The prompt
-  searches as you type and revealed every match it passed through on the way,
-  so `/spec` in a collapsed Kubernetes manifest left `metadata` open because
-  `sp` had matched `namespace` — and `Esc` left it open too. The folds are now
-  put back before each new preview and when the search is cancelled. A match
-  on a container's own key no longer opens that container either: its key row
-  is visible while it is collapsed, so only its ancestors open.
-  Cancelling with `Esc`, or pressing `Enter` on a query that matched nothing,
-  now also puts the screen and the cursor back where they were — in 1.x the
-  view stayed wherever the preview had last scrolled.
+### Compatibility
 
-- **A key that would read as something else is quoted**, in the document and
-  in the path alike. `{"a: b": "c"}` showed `a: b: "c"`, an empty key showed
-  as nothing, a line break in a key became an invisible space, and the path
-  `a.b › x › y › [0]` could not say whether `x › y` was one key or two, or
-  whether `[0]` was an index or a key. Such keys are now shown quoted and
-  escaped — `"a: b": "c"`, `"x › y"`, `"[0]"` — while `metadata:` stays as it
-  is. A YAML key keeps the quotes its source gave it.
-  The same goes for a key with a quote in it, one that starts with a brace
-  (`"{}"` is not an empty object), and one holding a zero-width character,
-  which is shown escaped (`\u200b`) inside quotes rather than invisibly. A
-  YAML key the source quoted because bare it would be another scalar —
-  `"null":`, `"1":` — keeps its quotes in the path too.
+Existing Markdown workflows, configuration files and key bindings remain
+compatible. No command-line option or configuration key was removed or changed
+in meaning.
 
-- **Piped JSON or YAML that was cut short or broken is an error, not
-  Markdown.** `curl … | diple` on a response that ended early showed the
-  half-document as garbled Markdown and exited 0. Now anonymous input gets
-  the parse error a stated format gets, with a hint that `--format markdown`
-  reads it as text, when it is:
-  - JSON that runs out inside a value (`{"a": [1, 2`, `{"a": tr`), or that
-    breaks after an object's first member name (`{"broken": }`);
-  - YAML that a stream detection would claim runs into, and that the input
-    leaves inside an unclosed quote or bracket — including a multi-line quoted
-    value of any length cut at a line break by `head -n`, and one cut right
-    after a `\` line continuation. The error points at the quote or bracket
-    that was never closed.
-  Prose that merely fails to parse as either still opens as Markdown.
+### Breaking changes
 
-- **YAML tags and quoted values read back as the source wrote them.** A
-  verbatim tag lost its `!<…>` and read as part of the value, a tag on a
-  document's root ran into its `--- Document N` label, and `!!int "42"` lost
-  its quotes. The outline's previews now quote a string where the document
-  does, so the string `"3"` no longer passes for the number `3` there.
-  The outline shows `U+FFFD` for a character it cannot print, as the document
-  does, rather than dropping it, and a percent-encoded control in a tag reads
-  back as the escape the source wrote.
-
-- **A JSON document that starts with a UTF-8 byte-order mark opens.** A
-  `.json` file saved with one failed with "found `\u{feff}`", and piped in it
-  fell back to Markdown; the mark is now ignored, as RFC 8259 allows.
-
-- **`:open` reports a document that does not parse on one line** —
-  `YAML parse error at bad.yaml:2:8: unclosed quote` — instead of squashing
-  the multi-line report, excerpt and all, onto the status line.
-
-- **A JSON document opens at its first row.** The screen was anchored on
-  the cursor's node, the root's first entry, so the root's own `{` or `[` —
-  and a multi-document stream's `--- Document 1` — started scrolled out of
-  sight.
-
-- **Markdown piped to diple is no longer mistaken for YAML.** A Markdown list
-  with a colon in an item (`- Fast: written in Rust`), an introduction over a
-  list (`Next steps:` then `- write tests`), and lines of prose that each put a
-  colon after their first word (`Note: this is important.`) are all valid
-  YAML, and detection claimed them — so `cat README.md | diple` could show a
-  sequence where 1.x showed bullets. Detection now counts only structure prose
-  does not write: a mapping under a mapping key or a mapping of two entries or
-  more inside a container, with keys and values that are not phrases; a
-  `%YAML` directive; an anchor an alias uses; a `!!` tag. A flat mapping
-  (`Status: done` over `Owner: alice`), a stream split by `---` (lists
-  separated by a rule, front matter over a list), an HTML entity at the start
-  of a list item (`- &copy; 2024`), a wrapped list item with two colons,
-  sentences in any script, front matter over a Markdown body, and an
-  indented code block of configuration are no longer taken as YAML; a flat
-  YAML file piped in needs `--format yaml`. `kubectl … -o
-  yaml`, Compose files, GitHub Actions, Ansible playbooks and Helm output are
-  recognised as before.
-
-### Breaking
-
-- **The public Rust API changed.** The Markdown-specific AST is no longer the
-  document: `diple::document` now exposes a format-neutral `DocumentModel`
-  (Markdown or structured) with the vocabulary the application actually uses —
-  folds, outline, path, search, capabilities — plus `SourceDocument`,
-  `FormatRequest` and a `load` entry point. Code that reached for the old
-  `document::parse` and the Markdown `Document` type must move to
-  `DocumentModel` and its `as_markdown()` escape hatch. The alternative was to
-  keep a Markdown-only type under a generic-sounding name, which would be a
-  worse long-term boundary than a major-version break.
-- **The minimum supported Rust version is now 1.81** (was 1.80), because the
-  YAML parser diple builds on requires it. It was raised deliberately and on
-  its own.
-- No key, configuration key or command-line option was removed, renamed or
-  given a different meaning. Existing configuration files stay valid, existing
-  bindings keep doing what they did, and `diple README.md` and `cat README.md |
-  diple` behave exactly as before.
+- The public Rust API now exposes the format-neutral `DocumentModel` instead of
+  the previous Markdown-specific `Document`. Users of `document::parse` must
+  migrate to the new `load` API and can use `as_markdown()` where access to the
+  Markdown representation is required.
+- The minimum supported Rust version is now 1.81 instead of 1.80.
 
 ## [1.2.0] - 2026-08-26
 
