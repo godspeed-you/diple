@@ -36,6 +36,13 @@ every save with `watch` — without losing your place in it.
   changes under an open `/` or `:` prompt. Off by default; stdin is never
   watched.
 
+### Security
+
+- `pulldown-cmark` 0.13.6 and `rustix` 1.1.6 fix RUSTSEC-2026-0414,
+  RUSTSEC-2026-0433 and RUSTSEC-2026-0486. diple was not exposed — it never
+  enables wikilinks and never calls the xattr functions — but the shipped
+  binary no longer carries the affected versions.
+
 ### Changed
 
 - Rust library API: `Config` and `CliArgs` gained the public `watch` (and
