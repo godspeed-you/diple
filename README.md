@@ -73,10 +73,10 @@ curl -s https://api.example.com/state | diple
 
 ```bash
 # Debian / Ubuntu
-sudo apt install ./diple_2.0.0_amd64.deb
+sudo apt install ./diple_2.1.0_amd64.deb
 
 # Fedora / RHEL
-sudo dnf install ./diple-2.0.0.x86_64.rpm
+sudo dnf install ./diple-2.1.0.x86_64.rpm
 
 # Arch Linux
 cd packaging/arch && makepkg -si

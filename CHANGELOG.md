@@ -11,6 +11,11 @@ at the top for work that has not shipped yet.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-12 — Reload and Watch
+
+Read a document again when its file changes — on demand with `R`, or on
+every save with `watch` — without losing your place in it.
+
 ### Added
 
 - **`R` reads the document again from its file.** For a file edited in
@@ -30,6 +35,16 @@ at the top for work that has not shipped yet.
   rename) are followed, a file that disappears is waited for, and nothing
   changes under an open `/` or `:` prompt. Off by default; stdin is never
   watched.
+
+### Changed
+
+- Rust library API: `Config` and `CliArgs` gained the public `watch` (and
+  `no_watch`) fields, and `AppOptions` remembers the file a document was read
+  from. Code outside the crate that builds `Config` or `CliArgs` as a struct
+  literal needs `..Default::default()`; `AppOptions` is now built from
+  `AppOptions::default()` with its fields assigned, and `.watching(path)` to
+  make the document reloadable. The command line, the configuration file and
+  every key binding are unaffected.
 
 ## [2.0.0] - 2026-09-25 — Structured Documents
 
@@ -285,7 +300,8 @@ therefore still open:
 - Packaging: `.deb`, `.rpm`, an Arch `PKGBUILD`, standalone Linux tarballs, a
   man page and bash/zsh/fish completions.
 
-[Unreleased]: https://github.com/godspeed-you/diple/compare/v2.0.0...main
+[Unreleased]: https://github.com/godspeed-you/diple/compare/v2.1.0...main
+[2.1.0]: https://github.com/godspeed-you/diple/releases/tag/v2.1.0
 [2.0.0]: https://github.com/godspeed-you/diple/releases/tag/v2.0.0
 [1.2.0]: https://github.com/godspeed-you/diple/releases/tag/v1.2.0
 [1.1.0]: https://github.com/godspeed-you/diple/releases/tag/v1.1.0
