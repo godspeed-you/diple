@@ -11,6 +11,26 @@ at the top for work that has not shipped yet.
 
 ## [Unreleased]
 
+### Added
+
+- **`R` reads the document again from its file.** For a file edited in
+  another window: the new version replaces the old one in place, and the
+  reader stays where they were — the text at the top of the screen, the
+  cursor, the collapsed sections and containers, the search and the outline
+  selection carry over, matched by heading titles in Markdown and by key paths
+  in JSON and YAML. Every other pane showing the same file is reloaded with
+  it, and unchanged Mermaid diagrams keep their renders. A file that cannot be
+  read or no longer parses leaves the version on screen as it was and says
+  why. `:reload` does the same, with `:e` and `:edit` as vim's spellings; the
+  action is `reload` in `[keys]`.
+- **`watch`: reload whenever the file changes.** `--watch`, `watch = true` or
+  `:watch true` make diple look at the file of every open document four times
+  a second and read it again once a change has settled, so a file that is
+  still being written is never shown half-finished. Atomic saves (write and
+  rename) are followed, a file that disappears is waited for, and nothing
+  changes under an open `/` or `:` prompt. Off by default; stdin is never
+  watched.
+
 ## [2.0.0] - 2026-09-25 — Structured Documents
 
 diple now supports JSON and YAML as first-class document formats alongside

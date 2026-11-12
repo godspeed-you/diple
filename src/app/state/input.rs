@@ -186,6 +186,7 @@ impl App {
                 self.request(Request::QuitAll);
             }
             Command::Open(target, path) => self.request(Request::Open { target, path }),
+            Command::Reload => self.request(Request::Reload),
             Command::Invalid(message) => self.set_message(message),
             Command::Help => {
                 self.help_kind = HelpKind::Settings;
@@ -351,6 +352,7 @@ impl App {
             Action::FocusOtherPane => self.request(Request::FocusOtherPane),
             Action::NextTab => self.request(Request::NextTab),
             Action::PreviousTab => self.request(Request::PreviousTab),
+            Action::Reload => self.request(Request::Reload),
             Action::Activate => self.activate(),
             Action::OpenLink => self.open_selected_link(),
             Action::NextLink => self.cycle_link(true),
@@ -564,6 +566,7 @@ impl App {
                 | Action::CollapseAll
                 | Action::ExpandAll => caps.folding,
                 Action::ToggleToc => caps.outline,
+                Action::Reload => self.source.is_some(),
                 _ => true,
             })
             .map(|action| {

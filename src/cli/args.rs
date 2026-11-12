@@ -47,6 +47,12 @@ pub struct CliArgs {
         help_heading = "Document options"
     )]
     pub path: Option<PathMode>,
+    /// Read the document again whenever its file changes.
+    #[arg(long, overrides_with = "no_watch", help_heading = "Document options")]
+    pub watch: bool,
+    /// Do not watch the document's file.
+    #[arg(long, overrides_with = "watch", help_heading = "Document options")]
+    pub no_watch: bool,
 
     // Appearance
     /// Colour theme.
@@ -154,6 +160,11 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
+    /// `--watch` / `--no-watch` as an override.
+    pub fn watch_override(&self) -> Option<bool> {
+        flag_pair(self.watch, self.no_watch)
+    }
+
     /// `--mouse` / `--no-mouse` as an override (None: unset).
     pub fn mouse_override(&self) -> Option<bool> {
         flag_pair(self.mouse, self.no_mouse)
@@ -256,6 +267,18 @@ mod tests {
         assert_eq!(a.line_numbers_override(), None);
         assert!(a.file.is_none());
         assert!(!a.check_config && !a.print_capabilities);
+    }
+
+    #[test]
+    fn watch_flags_override_in_both_directions() {
+        assert_eq!(parse(&["--watch"]).watch_override(), Some(true));
+        assert_eq!(parse(&["--no-watch"]).watch_override(), Some(false));
+        assert_eq!(parse(&[]).watch_override(), None);
+        assert_eq!(
+            parse(&["--watch", "--no-watch"]).watch_override(),
+            Some(false),
+            "the later flag wins"
+        );
     }
 
     #[test]

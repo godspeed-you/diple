@@ -19,7 +19,7 @@
 //!
 //! # Layout of this module
 //!
-//! The state is one inherent `impl App` split over five files along the lines
+//! The state is one inherent `impl App` split over six files along the lines
 //! of what a key press actually does. Rust lets an inherent impl live in the
 //! submodules of the module that defines the type, and private fields stay
 //! visible to descendants, so the split costs no accessors and no widened
@@ -37,13 +37,16 @@
 //!   folding, heading jumps, search driving and links,
 //! * `sidebars` — the TOC and key-hints panes and the Mermaid source
 //!   toggle, the three things that live beside the document rather than in
-//!   it.
+//!   it,
+//! * `reload` — reading the document again from its file, by hand (`R`) or
+//!   because `watch` saw it change, without losing the reader's place.
 
 #[cfg(test)]
 mod characterization;
 mod input;
 mod layout_cache;
 mod navigate;
+mod reload;
 mod sidebars;
 
 use std::process::Child;
@@ -52,6 +55,7 @@ use crate::app::command::CommandState;
 use crate::app::diagrams::DiagramProvider;
 use crate::app::hints::HintsState;
 use crate::app::search_ui::SearchState;
+use crate::app::source_file::SourceFile;
 use crate::app::toc::TocState;
 use crate::app::workspace::Request;
 use crate::config::keys::KeyMap;
@@ -110,6 +114,20 @@ pub struct AppOptions {
     pub width_override: Option<u16>,
     /// Emit `--debug` timings on stderr.
     pub debug: bool,
+    /// The file the document was read from, for reading it again; `None` for
+    /// stdin.
+    pub(crate) source: Option<SourceFile>,
+}
+
+impl AppOptions {
+    /// Remember the file `path` as the document's source, stamped now.
+    ///
+    /// Call it *before* reading the file: a write that lands between the
+    /// stamp and the read is then seen as a change rather than missed.
+    pub fn watching(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.source = Some(SourceFile::new(path));
+        self
+    }
 }
 
 impl Default for AppOptions {
@@ -119,6 +137,7 @@ impl Default for AppOptions {
             size: (80, 24),
             width_override: None,
             debug: false,
+            source: None,
         }
     }
 }
@@ -194,6 +213,8 @@ pub struct App {
     pending: String,
     help_scroll: usize,
     filename: String,
+    /// The file behind the document; `None` when it came from stdin.
+    source: Option<SourceFile>,
     debug: bool,
     quit: bool,
     children: Vec<Child>,
@@ -295,6 +316,7 @@ impl App {
             pending: String::new(),
             help_scroll: 0,
             filename: opts.filename,
+            source: opts.source,
             debug: opts.debug,
             quit: false,
             children: Vec::new(),

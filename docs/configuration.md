@@ -29,6 +29,7 @@ Environment overrides: `DIPLE_CONFIG`, `DIPLE_THEME`, `DIPLE_MERMAID`.
 
 ```toml
 format = "auto"         # auto | markdown | json | yaml — how a document is read
+watch = false           # read the document again whenever its file changes
 theme = "auto"          # auto | dark | light | crt | cyberpunk | <name>
 color = "auto"          # auto | always | never
 mouse = true            # enable mouse reporting where supported
@@ -104,6 +105,30 @@ The key is settable at `:` like any other, but a document is parsed once, when
 it is opened: `:format json` records a value and changes nothing on screen, and
 `:open` keeps using the format the session started with. Use `--format` to read
 something as a different format.
+
+### `watch`
+
+Read a document again whenever its file changes. Leave diple open beside the
+editor, save, and the new version appears about half a second later, with the
+reader still where they were: the same text at the top of the screen, the same
+sections and containers collapsed, the same search. `R` does the same thing on
+demand, and works whether `watch` is on or not.
+
+diple looks at the file of every open document four times a second — one
+`stat(2)` each, so an idle diple still does next to nothing — and reads it
+again once the change has settled, so a file that is still being written is
+never shown half-finished. Editors that save by writing a new file and renaming
+it over the old one are followed, and a file that disappears is waited for and
+read again when it is back.
+
+A version that no longer parses — JSON caught in the middle of an edit — leaves
+the last good version on screen and says so in the status line; the next save
+that parses replaces it. A document is always read again as the format it was
+first read as. Documents read from stdin have no file and are never watched.
+
+Off by default, because a pager that changes the screen by itself is a surprise
+unless it was asked for. `--watch` and `--no-watch` override this key, and
+`:watch true` turns it on for every open document of the running session.
 
 ### `theme`
 

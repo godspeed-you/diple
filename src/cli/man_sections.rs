@@ -301,6 +301,26 @@ of the file name. This gesture takes an argument rather than naming an action,
 so it is the one binding that
 .B [keys]
 cannot rebind.
+.TP
+.B R
+Read the focused document again from its file (\fBreload\fR), for a file that
+was edited in another window. The reader stays where they were: the text at
+the top of the screen, the cursor, the collapsed sections and containers, the
+search and the outline selection are carried over to the new version, matched
+by heading titles in Markdown and by key paths in JSON and YAML. Every other
+pane showing the same file is reloaded with it. A file that cannot be read, or
+that no longer parses, leaves the version on screen as it was and says why in
+the status line. A document read from stdin cannot be reloaded.
+.IP
+With
+.B watch
+on (\fB\-\-watch\fR, \fBwatch = true\fR or \fB:watch true\fR) this happens
+by itself: diple looks at the file of every open document four times a second
+and reads it again once a change has settled, about half a second after it was
+saved. Editors that save by writing a new file and renaming it are followed
+too, and a file that disappears is waited for. Nothing is reloaded while the
+\fB/\fR or \fB:\fR prompt is open; the change is picked up as soon as it
+closes.
 .SS "Command line"
 .TP
 .B :
@@ -348,6 +368,14 @@ working directory is looked for next to the document that is open.
 .B :close
 closes the focused document without ever ending the session. A split is
 refused rather than halved on a terminal with no room for two readable panes.
+.IP
+.B :reload
+reads the focused document again from its file, exactly like
+.BR R ;
+.B :e
+and
+.B :edit
+are accepted for it.
 "#;
 
 /// `.SH CONFIGURATION` — the configuration *file*, as opposed to the
@@ -386,6 +414,7 @@ or
 .RS 4
 .EX
 format = "auto"         # auto | markdown | json | yaml; see DOCUMENT FORMATS
+watch = false           # read the document again whenever its file changes
 theme = "auto"          # auto | dark | light | crt | cyberpunk
 color = "auto"          # auto | always | never
 mouse = true            # enable mouse reporting where supported

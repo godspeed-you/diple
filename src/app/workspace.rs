@@ -27,6 +27,15 @@
 //! rectangle, so every width the layout engine is asked for is the width the
 //! document is actually drawn at, split or not.
 //!
+//! # Reloading and watching
+//!
+//! Reading a document again is the view's own business ([`App::reload`]),
+//! but which views show the same file is the workspace's: `R` in one pane of
+//! a split that shows one file twice reloads both, so the two never disagree
+//! about what the file says. `watch` is driven from here for the same reason
+//! — the event loop asks the workspace, which asks every view, at most once
+//! per [`WATCH_INTERVAL`].
+//!
 //! # Settings are session-wide
 //!
 //! `:` writes into the focused view's [`Config`]. A setting is a property of
@@ -35,6 +44,7 @@
 //! any change on to every other view.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 
@@ -57,6 +67,12 @@ const MIN_PANE_WIDTH: u16 = 24;
 /// Shortest a pane may be before a stacked split is refused: one status row
 /// plus enough document to be worth looking at.
 const MIN_PANE_HEIGHT: u16 = 5;
+
+/// How often `watch` looks at the files of the open documents.
+///
+/// A change is read once it has looked the same on two consecutive checks,
+/// so a saved file appears between one and two intervals later.
+pub(crate) const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How the two panes of a tab share the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +103,9 @@ pub(crate) enum Request {
     PreviousTab,
     /// Show the tab with this index.
     GotoTab(usize),
+    /// Read the focused document again, and every other view of its file
+    /// (`R`, `:reload`).
+    Reload,
     /// Close the focused view, but never end the session (`:close`).
     Close,
     /// End the session, whatever is open (`Ctrl-C`, `:qa`).
@@ -178,6 +197,8 @@ pub struct Workspace {
     format: FormatRequest,
     size: (u16, u16),
     quit: bool,
+    /// When `watch` last looked at the files.
+    watched: Option<Instant>,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -217,6 +238,7 @@ impl Workspace {
             format,
             size,
             quit: false,
+            watched: None,
         };
         workspace.sync_views();
         workspace
@@ -447,7 +469,67 @@ impl Workspace {
             Request::PreviousTab => self.cycle_tab(-1),
             Request::GotoTab(index) => self.goto_tab(index),
             Request::Open { target, path } => self.open(target, &path),
+            Request::Reload => self.reload_focused(),
         }
+    }
+
+    /// Read the focused document again, and every other view of the same
+    /// file with it.
+    fn reload_focused(&mut self) {
+        let Some(path) = self.focused().source_path().map(Path::to_path_buf) else {
+            // Let the view say why: it knows its own name.
+            if let Err(message) = self.focused_mut().reload() {
+                self.focused_mut().set_message(message);
+            }
+            return;
+        };
+        if let Err(message) = self.focused_mut().reload() {
+            self.focused_mut().set_message(message);
+            return;
+        }
+        self.focused_mut().set_message("reloaded");
+        let (active, focus) = (self.active, self.tabs[self.active].focus);
+        for (t, tab) in self.tabs.iter_mut().enumerate() {
+            for (p, app) in tab.panes.iter_mut().enumerate() {
+                let same = app
+                    .source_path()
+                    .is_some_and(|other| crate::app::source_file::same_file(&path, other));
+                if same && (t, p) != (active, focus) {
+                    // The file was just read successfully, so this one reads
+                    // the same bytes; a failure would leave it as it was.
+                    let _ = app.reload();
+                }
+            }
+        }
+    }
+
+    /// Look at every open document's file and read again the ones that
+    /// changed, if `watch` is on and [`WATCH_INTERVAL`] has passed since the
+    /// last look.
+    ///
+    /// `now` is a parameter so the interval can be tested without sleeping.
+    /// Returns `true` when something on screen changed.
+    pub(crate) fn watch(&mut self, now: Instant) -> bool {
+        if !self.config.watch {
+            self.watched = None;
+            return false;
+        }
+        if self
+            .watched
+            .is_some_and(|last| now.saturating_duration_since(last) < WATCH_INTERVAL)
+        {
+            return false;
+        }
+        self.watched = Some(now);
+        // Every view, not only the visible ones: a tab that is switched to
+        // should already show what its file says.
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            for app in &mut tab.panes {
+                changed |= app.watch_tick();
+            }
+        }
+        changed
     }
 
     /// Hand a `:` change on to every other view.
@@ -598,12 +680,12 @@ impl Workspace {
 
     /// Read, parse and lay out a document, built exactly like the first one.
     fn load(&self, path: &Path) -> Result<App, String> {
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let text = match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
-        };
+        // Stamped before it is read, so `watch` sees a write that races the
+        // read as a change rather than missing it.
+        let mut file = crate::app::source_file::SourceFile::new(path);
+        let text = file
+            .read()
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         // `:open` detects the format exactly the way the command line does —
         // the same call, the same session-wide `--format` — so a Markdown
         // document and a YAML one can sit side by side in one split.
@@ -632,6 +714,7 @@ impl Workspace {
                 size: self.size,
                 width_override: self.width_override,
                 debug: self.debug,
+                source: Some(file),
             },
         ))
     }
@@ -961,5 +1044,91 @@ mod tests {
         assert_eq!(ws.active, 1);
         ws.handle_event(click(1, 0));
         assert_eq!(ws.active, 0, "the first label selects the first tab");
+    }
+
+    /// The number of fold targets each pane's document has: a cheap way to
+    /// tell which version of a file a pane is showing.
+    fn folds_per_pane(ws: &Workspace) -> Vec<usize> {
+        ws.tabs[ws.active]
+            .panes
+            .iter()
+            .map(|app| app.doc.fold_state().len())
+            .collect()
+    }
+
+    #[test]
+    fn reload_reads_every_pane_of_the_same_file_and_leaves_the_others() {
+        let docs = Docs::new("reload");
+        let mut ws = workspace((100, 24));
+        command(&mut ws, &format!("open tab {}", docs.path("second.md")));
+        command(
+            &mut ws,
+            &format!("open side-by-side {}", docs.path("second.md")),
+        );
+        command(&mut ws, &format!("open tab {}", docs.path("third.md")));
+        ws.goto_tab(1);
+        assert_eq!(folds_per_pane(&ws), [1, 1]);
+
+        fs::write(docs.0.join("second.md"), "# Second\n\n# More\n").expect("write");
+        fs::write(docs.0.join("third.md"), "# Third\n\n# More\n").expect("write");
+        ws.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Char('R'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(folds_per_pane(&ws), [2, 2], "both views of second.md");
+        assert_eq!(ws.focused().message(), Some("reloaded"));
+        assert_eq!(
+            ws.tabs[2].panes[0].doc.fold_state().len(),
+            1,
+            "third.md was not asked for"
+        );
+    }
+
+    #[test]
+    fn reload_says_why_when_there_is_no_file() {
+        let mut ws = workspace((80, 24));
+        command(&mut ws, "reload");
+        assert!(ws
+            .focused()
+            .message()
+            .is_some_and(|m| m.contains("cannot be reloaded")));
+    }
+
+    #[test]
+    fn watch_looks_at_the_files_only_when_on_and_at_its_own_pace() {
+        let docs = Docs::new("watch");
+        let mut ws = workspace((80, 24));
+        command(&mut ws, &format!("open tab {}", docs.path("second.md")));
+        fs::write(docs.0.join("second.md"), "# Second\n\n# More\n").expect("write");
+
+        let start = Instant::now();
+        let tick = |n: u32| start + WATCH_INTERVAL * n;
+        assert!(!ws.watch(tick(0)), "off by default");
+        assert!(!ws.watch(tick(1)));
+        assert_eq!(folds_per_pane(&ws), [1]);
+
+        command(&mut ws, "watch = true");
+        assert!(!ws.watch(tick(2)), "first sight of the change");
+        assert!(
+            !ws.watch(tick(2) + WATCH_INTERVAL / 2),
+            "too soon to look again"
+        );
+        assert!(ws.watch(tick(3)), "settled, read again");
+        assert_eq!(folds_per_pane(&ws), [2]);
+        assert_eq!(ws.focused().message(), Some("file changed, reloaded"));
+    }
+
+    #[test]
+    fn watch_keeps_a_tab_that_is_not_shown_up_to_date() {
+        let docs = Docs::new("watch-hidden");
+        let mut ws = workspace((80, 24));
+        command(&mut ws, "watch = true");
+        command(&mut ws, &format!("open tab {}", docs.path("second.md")));
+        ws.goto_tab(0);
+        fs::write(docs.0.join("second.md"), "# Second\n\n# More\n").expect("write");
+        let start = Instant::now();
+        ws.watch(start);
+        ws.watch(start + WATCH_INTERVAL);
+        assert_eq!(ws.tabs[1].panes[0].doc.fold_state().len(), 2);
     }
 }

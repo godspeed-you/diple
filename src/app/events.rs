@@ -20,6 +20,14 @@
 //! That work is finite: once the reader's surroundings are highlighted the
 //! loop goes back to doing nothing at all.
 //!
+//! # Watching
+//!
+//! With `watch` on, the loop also asks the workspace to look at the open
+//! documents' files, which it does at most every
+//! [`WATCH_INTERVAL`](crate::app::workspace::WATCH_INTERVAL): one `stat(2)`
+//! per document, so an idle diple still does next to nothing. With `watch`
+//! off it costs nothing at all.
+//!
 //! # Images
 //!
 //! ratatui cannot draw images. After the ratatui pass, `draw_images` moves
@@ -29,7 +37,7 @@
 //! never produce garbage on screen.
 
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{MoveTo, RestorePosition, SavePosition};
 use crossterm::event::{self};
@@ -550,6 +558,9 @@ pub fn run(workspace: &mut Workspace) -> io::Result<()> {
             // no CPU once the reader's surroundings are highlighted.
             workspace.realize_ahead();
             workspace.reap_children();
+            if workspace.watch(Instant::now()) {
+                redraw = true;
+            }
             continue;
         }
         // Drain everything that is already queued before redrawing, so a
@@ -562,6 +573,9 @@ pub fn run(workspace: &mut Workspace) -> io::Result<()> {
             }
         }
         workspace.reap_children();
+        // A reader who never stops scrolling never reaches the idle branch,
+        // so the files are looked at here too; the workspace keeps the pace.
+        workspace.watch(Instant::now());
     }
 }
 

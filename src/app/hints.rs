@@ -83,6 +83,8 @@ pub(crate) struct HintContext {
     pub(crate) tabs: usize,
     /// How many panes the tab being shown has.
     pub(crate) panes: usize,
+    /// The document came from a file, so `R` can read it again.
+    pub(crate) reloadable: bool,
 }
 
 impl Default for HintContext {
@@ -100,6 +102,7 @@ impl Default for HintContext {
             mouse_on: false,
             tabs: 1,
             panes: 1,
+            reloadable: false,
         }
     }
 }
@@ -382,6 +385,10 @@ fn normal_groups(ctx: &HintContext, keys: &KeyMap) -> Vec<HintGroup> {
         };
         view_rows.push(row(keys, Action::ToggleMouse, label));
     }
+    // stdin cannot be read twice, so the key is only offered for a file.
+    if ctx.reloadable {
+        view_rows.push(row(keys, Action::Reload, "reload"));
+    }
     view_rows.push(row(keys, Action::Help, "help"));
     // The same key, and a label that says what it will actually do: with a
     // second document open it closes this one rather than the session.
@@ -552,6 +559,22 @@ mod tests {
         assert_eq!(by_title("Fold"), Some(3));
         assert_eq!(by_title("Search"), Some(4));
         assert_eq!(keys_for(&g, Action::ToggleKeyHints).as_deref(), Some("K"));
+    }
+
+    #[test]
+    fn reload_is_offered_only_for_a_document_read_from_a_file() {
+        let map = KeyMap::with_defaults();
+        let piped = groups(&HintContext::default(), &map);
+        assert_eq!(keys_for(&piped, Action::Reload), None, "stdin");
+        let file = groups(
+            &HintContext {
+                reloadable: true,
+                ..HintContext::default()
+            },
+            &map,
+        );
+        assert_eq!(keys_for(&file, Action::Reload).as_deref(), Some("R"));
+        assert!(labels(&file, "View").contains(&"reload".to_string()));
     }
 
     #[test]

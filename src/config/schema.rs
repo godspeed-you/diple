@@ -18,6 +18,12 @@ pub struct Config {
     /// First in the file because it decides what the document *is*; every
     /// other key decides how it looks.
     pub format: FormatMode,
+    /// Read the document again whenever its file changes.
+    ///
+    /// Off by default: a pager that rewrites the screen on its own is a
+    /// surprise unless it was asked for. Documents read from stdin are never
+    /// watched, because there is no file to look at.
+    pub watch: bool,
     /// Colour theme: `auto`, `dark`, `light` or a named theme.
     pub theme: Theme,
     /// Colour output: `auto`, `always`, `never`.
@@ -65,6 +71,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             format: FormatMode::Auto,
+            watch: false,
             theme: Theme::Auto,
             color: ColorMode::Auto,
             mouse: true,

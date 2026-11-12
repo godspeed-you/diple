@@ -102,6 +102,12 @@ pub const ALL: &[Setting] = &[
         help: "how a document is read; the open one stays as it was parsed",
     },
     Setting {
+        name: "watch",
+        kind: BOOL,
+        default: "false",
+        help: "read a document again whenever its file changes",
+    },
+    Setting {
         name: "theme",
         kind: Kind::ChoiceOrName(&["auto", "dark", "light", "crt", "cyberpunk"]),
         default: "auto",
@@ -261,6 +267,7 @@ pub fn matching(prefix: &str) -> Vec<&'static str> {
 pub fn read(config: &Config, name: &str) -> Option<String> {
     let v = match name {
         "format" => config.format.as_str().to_string(),
+        "watch" => config.watch.to_string(),
         "theme" => config.theme.as_str().to_string(),
         "color" => config.color.as_str().to_string(),
         "mouse" => config.mouse.to_string(),
@@ -318,6 +325,13 @@ pub fn write(config: &mut Config, name: &str, value: &str) -> Result<Effect, Str
         // should read, so nothing on screen has to change.
         "format" => {
             config.format = FormatMode::parse(value).ok_or_else(bad)?;
+            Effect::Redraw
+        }
+        // The workspace polls the files of every open document while this
+        // is on; it reads the session's setting each time, so nothing has to
+        // be rebuilt for it to take hold.
+        "watch" => {
+            config.watch = boolean()?;
             Effect::Redraw
         }
         "theme" => {

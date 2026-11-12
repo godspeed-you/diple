@@ -144,6 +144,7 @@ links are also emitted as native terminal hyperlinks.
 | `Ctrl-N` | `next_tab` | show the next tab |
 | `Ctrl-P` | `previous_tab` | show the previous tab |
 | `Alt-1` … `Alt-9` | — | show that tab by its number |
+| `R` | `reload` | read the focused document again from its file |
 
 `:open` (below) is what puts a second document on screen. Two panes share the
 body left and right (`side-by-side`) or above and below (`stacked`); the pane
@@ -157,6 +158,19 @@ normal action name.
 
 `q` and `:q` close the focused pane, then the focused tab, and only leave when
 the last document is closed. `Ctrl-C` always leaves at once.
+
+`R` is for a document edited in another window: it reads the file again and
+keeps the reader in place. The text at the top of the screen, the cursor, the
+collapsed sections or containers, the search and the outline selection all
+carry over, matched by heading titles in Markdown and by key paths in JSON and
+YAML, so a paragraph added above the reader does not move them. Every other
+pane that shows the same file is reloaded with it. A file that cannot be read
+or no longer parses leaves the version on screen as it is, with the reason in
+the status line. The key hints offer `R` only for a document that came from a
+file; stdin cannot be read twice.
+
+The `watch` setting (`--watch`, `:watch true`) does the same thing by itself
+whenever a file changes — see [configuration.md](configuration.md#watch).
 
 For Markdown the sidebar holds one entry per heading. For JSON and YAML it
 holds one entry per node — containers by their key or `[index]`, scalars as
@@ -193,6 +207,7 @@ work, as does a leading `set` for the muscle memory it comes from.
 | `:open stacked PATH` | open a document above and below this one |
 | `:open tab PATH` | open a document in a tab of its own |
 | `:close` | close the focused document, never the session |
+| `:reload`, `:e` | read the focused document again from its file, like `R` |
 | `:q` | close the focused document; the last one quits |
 | `:qa` | quit, whatever is open |
 | `Esc` | leave the line without applying it |

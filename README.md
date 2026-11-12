@@ -196,6 +196,7 @@ containers — objects, arrays, mappings and sequences.
 | `Ctrl-W` | focus the other pane of a split |
 | `Ctrl-N` `Ctrl-P` | next / previous tab |
 | `Alt-1` … `Alt-9` | tab by number |
+| `R` | read the document again from its file |
 | `?` | help |
 | `q` | close the document; the last one quits |
 
@@ -217,12 +218,25 @@ the working directory is looked for next to the document that is open.
 bar prints. A tab bar appears on the top row only once a second tab is open.
 Settings apply to the whole session: `:theme crt` in one pane changes both.
 
+### Reading a file while you edit it
+
+```bash
+diple --watch notes.md
+```
+
+With `--watch` (or `watch = true`, or `:watch true` at runtime) diple reads the
+document again whenever its file is saved, and keeps you where you were: the
+same text at the top of the screen, the same sections collapsed, the same
+search. `R` (or `:reload`) does it once, on demand. A JSON or YAML file caught
+in the middle of an edit leaves the last version that parsed on screen until
+the next one does.
+
 ### Options
 
 ```text
 diple [OPTIONS] [FILE]
 
-  --format <auto|markdown|json|yaml>
+  --format <auto|markdown|json|yaml>  --watch / --no-watch
   --structured-indent <COLUMNS>      --path <auto|always|never>
   --theme <auto|dark|light|NAME>     --color <auto|always|never>
   --width <COLUMNS>                  --max-width <COLUMNS>
@@ -243,6 +257,7 @@ diple [OPTIONS] [FILE]
 
 ```toml
 format = "auto"  # auto | markdown | json | yaml
+watch = false    # read the document again when its file changes
 theme = "auto"   # auto | dark | light | crt | cyberpunk
 mouse = true
 toc = false

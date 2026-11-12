@@ -50,6 +50,9 @@ impl Config {
         if let Some(format) = cli.format {
             merged.format = format;
         }
+        if let Some(watch) = cli.watch_override() {
+            merged.watch = watch;
+        }
         if let Some(indent) = cli.structured_indent {
             merged.structured.indent = indent;
         }
@@ -201,6 +204,25 @@ mod tests {
             .merged_with_env(&cli(&["--key-hints", "--no-key-hints"]), |_| None)
             .unwrap();
         assert!(!merged.key_hints, "the later flag wins");
+    }
+
+    #[test]
+    fn watch_is_off_unless_the_file_or_a_flag_turns_it_on() {
+        assert!(!Config::default().watch, "off by default");
+        let base = Config {
+            watch: true,
+            ..Config::default()
+        };
+        let merged = base.merged_with_env(&cli(&[]), |_| None).unwrap();
+        assert!(merged.watch, "the file value survives");
+        let merged = base
+            .merged_with_env(&cli(&["--no-watch"]), |_| None)
+            .unwrap();
+        assert!(!merged.watch, "the flag beats the file");
+        let merged = Config::default()
+            .merged_with_env(&cli(&["--watch"]), |_| None)
+            .unwrap();
+        assert!(merged.watch);
     }
 
     /// `--format` is the last word on how a document is read, and the file

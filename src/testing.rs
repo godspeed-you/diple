@@ -177,6 +177,7 @@ impl AppBuilder {
                 size: (80, 24),
                 width_override: None,
                 debug: false,
+                source: None,
             },
         }
     }
@@ -220,6 +221,17 @@ impl AppBuilder {
     /// `--width`: pin the layout width regardless of the terminal size.
     pub(crate) fn width_override(mut self, width: Option<u16>) -> Self {
         self.options.width_override = width;
+        self
+    }
+
+    /// Read from (and watch) the file at `path`, as if opened from it.
+    ///
+    /// Only the source is set; the document itself is still the one the
+    /// builder was given, so the test decides what is on screen to begin with.
+    pub(crate) fn source(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        self.options.filename = path.display().to_string();
+        self.options = self.options.watching(path);
         self
     }
 

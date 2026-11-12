@@ -276,6 +276,8 @@ const DEFAULT_BINDINGS: &[(Action, &[&str])] = &[
     (Action::FocusOtherPane, &["ctrl-w"]),
     (Action::NextTab, &["ctrl-n"]),
     (Action::PreviousTab, &["ctrl-p"]),
+    // `less` reads its file again on `R`; neither `R` nor `r` was bound.
+    (Action::Reload, &["R"]),
     (Action::Activate, &["enter"]),
     (Action::OpenLink, &["o"]),
     (Action::NextLink, &["tab"]),

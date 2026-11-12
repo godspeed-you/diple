@@ -113,6 +113,7 @@ impl App {
             mouse_on: self.mouse_on,
             tabs: self.views.0,
             panes: self.views.1,
+            reloadable: self.source.is_some(),
         }
     }
 

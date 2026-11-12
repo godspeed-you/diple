@@ -139,6 +139,15 @@ fn run() -> Result<ExitCode, Failure> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // The file is remembered for `R` and `watch`, and stamped before it is
+    // read: a write that races the read is then seen as a change rather than
+    // missed. stdin has no file to read again.
+    let mut options = args
+        .file
+        .as_deref()
+        .filter(|path| path.as_os_str() != "-")
+        .map(|path| AppOptions::default().watching(path))
+        .unwrap_or_default();
     let (name, text) = read_input(args.file.as_deref())?;
     // The format the whole session reads with: `--format` when it was given,
     // otherwise the configured default, otherwise detection. The workspace
@@ -177,7 +186,7 @@ fn run() -> Result<ExitCode, Failure> {
     // to build every document opened later exactly like this one.
     let caps_for_workspace = caps.clone();
     lifecycle::install_panic_hook();
-    let options = lifecycle::TerminalOptions {
+    let terminal_options = lifecycle::TerminalOptions {
         alternate_screen: true,
         mouse: cfg.mouse && caps.mouse,
         hide_cursor: true,
@@ -193,11 +202,12 @@ fn run() -> Result<ExitCode, Failure> {
             color,
             diagrams,
         },
-        AppOptions {
-            filename: name,
-            size: term_size,
-            width_override: args.width,
-            debug: args.debug,
+        {
+            options.filename = name;
+            options.size = term_size;
+            options.width_override = args.width;
+            options.debug = args.debug;
+            options
         },
     );
     // The first document is the whole workspace until `:open` adds another.
@@ -214,7 +224,7 @@ fn run() -> Result<ExitCode, Failure> {
         eprintln!("diple: first frame ready after {:?}", started.elapsed());
     }
 
-    let mut guard = lifecycle::TerminalGuard::enter(options)
+    let mut guard = lifecycle::TerminalGuard::enter(terminal_options)
         .map_err(|e| Failure::Runtime(format!("cannot enter the terminal UI: {e}")))?;
     let result = app::events::run(&mut workspace);
     // Restore before reporting anything, on every exit path.

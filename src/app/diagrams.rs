@@ -101,6 +101,100 @@ impl DiagramProvider {
         now_source
     }
 
+    /// Take over what `previous` already knows about the diagrams of a
+    /// document that was read again.
+    ///
+    /// The cache is keyed by node, and a reload renumbers nodes, so nothing
+    /// in it can be used as it is. What *can* be reused is a render of the
+    /// same diagram: a new diagram whose source is identical to an old one
+    /// gets that one's renders, images and source-view toggle. That is what
+    /// keeps a reload of a document full of diagrams from invoking `mmdc`
+    /// again for every one of them when only the prose changed. A diagram
+    /// that was edited is rendered afresh, and keeps the source view the
+    /// diagram it replaced was switched to.
+    pub(crate) fn inherit(
+        &self,
+        previous: &DiagramProvider,
+        old: &crate::document::DocumentModel,
+        new: &crate::document::DocumentModel,
+        relocation: &crate::document::Relocation,
+    ) {
+        use crate::document::markdown::{Document, NodeKind};
+        fn diagrams(doc: &Document) -> Vec<(NodeId, &str)> {
+            doc.walk()
+                .filter_map(|node| match &node.kind {
+                    NodeKind::Mermaid(block) => Some((node.id, block.source.as_str())),
+                    _ => None,
+                })
+                .collect()
+        }
+        let (Some(old), Some(new)) = (old.as_markdown(), new.as_markdown()) else {
+            return;
+        };
+        let before = previous.inner.borrow();
+        let mut inner = self.inner.borrow_mut();
+        inner.next_id = inner.next_id.max(before.next_id);
+        inner
+            .seen_warnings
+            .extend(before.seen_warnings.iter().cloned());
+
+        // Each old diagram is handed over at most once, in document order, so
+        // two identical diagrams stay two.
+        let mut unclaimed: HashMap<&str, Vec<NodeId>> = HashMap::new();
+        for (node, source) in diagrams(old).into_iter().rev() {
+            unclaimed.entry(source).or_default().push(node);
+        }
+        let new_diagrams = diagrams(new);
+        let mut matched: HashMap<NodeId, NodeId> = HashMap::new();
+        for &(node, source) in &new_diagrams {
+            let Some(from) = unclaimed.get_mut(source).and_then(Vec::pop) else {
+                continue;
+            };
+            matched.insert(from, node);
+            if before.force_source.contains(&from) {
+                inner.force_source.insert(node);
+            }
+            for ((_, width), content) in before.cache.iter().filter(|((n, _), _)| *n == from) {
+                if let DiagramContent::Image { id, .. } = content {
+                    if let Some(image) = before.images.get(id) {
+                        inner.images.insert(*id, image.clone());
+                    }
+                }
+                inner.cache.insert((node, *width), content.clone());
+            }
+        }
+        // An edited diagram is a new render, but it is still the diagram the
+        // reader switched to source view. The diagrams left over on both
+        // sides are the edited ones; when as many are left on each side, the
+        // edit replaced them one for one, in order. Otherwise only the
+        // relocation can say which is which.
+        let old_left: Vec<NodeId> = diagrams(old)
+            .into_iter()
+            .map(|(node, _)| node)
+            .filter(|node| !matched.contains_key(node))
+            .collect();
+        let new_left: Vec<NodeId> = new_diagrams
+            .iter()
+            .map(|(node, _)| *node)
+            .filter(|node| !matched.values().any(|n| n == node))
+            .collect();
+        for (index, from) in old_left.iter().enumerate() {
+            if !before.force_source.contains(from) {
+                continue;
+            }
+            let to = if old_left.len() == new_left.len() {
+                new_left.get(index).copied()
+            } else {
+                relocation
+                    .node(*from)
+                    .filter(|node| new_left.contains(node))
+            };
+            if let Some(node) = to {
+                inner.force_source.insert(node);
+            }
+        }
+    }
+
     /// Look up a registered image by the id carried in an `ImageRef`.
     pub(crate) fn image(&self, id: usize) -> Option<DiagramImage> {
         self.inner.borrow().images.get(&id).cloned()
@@ -231,6 +325,71 @@ mod tests {
         assert_eq!(p.cache_len(), 1);
         let _ = p.diagram(3, "graph LR\nA-->B", 40);
         assert_eq!(p.cache_len(), 2);
+    }
+
+    /// Lay out every diagram of `doc` once through `p`, as a layout would.
+    fn render_all(p: &DiagramProvider, doc: &crate::document::DocumentModel) {
+        use crate::document::markdown::NodeKind;
+        for node in doc.as_markdown().expect("markdown").walk() {
+            if let NodeKind::Mermaid(block) = &node.kind {
+                let _ = p.diagram(node.id, &block.source, 80);
+            }
+        }
+    }
+
+    #[test]
+    fn a_reload_reuses_the_renders_of_unchanged_diagrams_and_redoes_edited_ones() {
+        use crate::document::Relocation;
+        use std::rc::Rc;
+
+        struct Shared(Rc<Cell<usize>>);
+        impl MermaidRenderer for Shared {
+            fn render(&self, _block: &MermaidBlock, _width: usize) -> MermaidRender {
+                self.0.set(self.0.get() + 1);
+                MermaidRender::ok(MermaidOutput::Text(vec!["drawn".to_string()]))
+            }
+        }
+
+        let calls = Rc::new(Cell::new(0));
+        let fence = |body: &str| format!("```mermaid\n{body}\n```\n\n");
+        let old = crate::testing::model(&format!(
+            "# D\n\n{}{}",
+            fence("graph LR\nA-->B"),
+            fence("graph LR\nC-->D")
+        ));
+        let first = DiagramProvider::new(Box::new(Shared(calls.clone())));
+        render_all(&first, &old);
+        assert_eq!(calls.get(), 2);
+        let edited = |doc: &crate::document::DocumentModel, nth: usize| {
+            doc.as_markdown()
+                .expect("markdown")
+                .walk()
+                .filter(|n| matches!(n.kind, crate::document::markdown::NodeKind::Mermaid(_)))
+                .nth(nth)
+                .map(|n| n.id)
+                .expect("diagram")
+        };
+        first.toggle_source(edited(&old, 1));
+
+        // Prose added above both, and the second diagram edited.
+        let new = crate::testing::model(&format!(
+            "# D\n\nNew prose.\n\n{}{}",
+            fence("graph LR\nA-->B"),
+            fence("graph LR\nC-->E")
+        ));
+        let second = DiagramProvider::new(Box::new(Shared(calls.clone())));
+        second.inherit(&first, &old, &new, &Relocation::new(&old, &new));
+        render_all(&second, &new);
+        assert_eq!(
+            calls.get(),
+            2,
+            "the unchanged one is reused, the edited one shows source"
+        );
+        assert!(!second.shows_source(edited(&new, 0)));
+        assert!(
+            second.shows_source(edited(&new, 1)),
+            "the edited diagram keeps the source view it was switched to"
+        );
     }
 
     #[test]

@@ -58,6 +58,8 @@ pub enum Action {
     NextTab,
     /// Show the previous tab (`Ctrl-P`).
     PreviousTab,
+    /// Read the document again from its file (`R`).
+    Reload,
     /// Activate selected heading/link (`Enter`).
     Activate,
     /// Open the selected link (`o`).
@@ -120,6 +122,7 @@ impl Action {
         Action::FocusOtherPane,
         Action::NextTab,
         Action::PreviousTab,
+        Action::Reload,
         Action::Activate,
         Action::OpenLink,
         Action::NextLink,
@@ -164,6 +167,7 @@ impl Action {
             Action::FocusOtherPane => "focus_other_pane",
             Action::NextTab => "next_tab",
             Action::PreviousTab => "previous_tab",
+            Action::Reload => "reload",
             Action::Activate => "activate",
             Action::OpenLink => "open_link",
             Action::NextLink => "next_link",
@@ -214,6 +218,7 @@ impl Action {
             Action::FocusOtherPane => "focus the other pane",
             Action::NextTab => "next tab",
             Action::PreviousTab => "previous tab",
+            Action::Reload => "read the document again from its file",
             Action::Activate => "fold at the cursor, or follow a link",
             Action::OpenLink => "open selected link",
             Action::NextLink => "select next link",

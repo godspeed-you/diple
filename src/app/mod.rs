@@ -13,6 +13,7 @@
 //! * `workspace` — the open documents: tabs, the two panes of a split and
 //!   the focus between them,
 //! * `paths` — filesystem completion and resolution for `:open`,
+//! * `source_file` — the file behind a document, for `R` and `watch`,
 //! * `toc` / `search_ui` — sidebar and search prompt state,
 //! * `hints` — the right-hand key hints sidebar and its context rules.
 
@@ -23,6 +24,7 @@ pub mod events;
 pub(crate) mod hints;
 pub(crate) mod paths;
 pub(crate) mod search_ui;
+pub(crate) mod source_file;
 pub(crate) mod state;
 pub(crate) mod toc;
 pub(crate) mod workspace;

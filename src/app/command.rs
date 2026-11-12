@@ -62,7 +62,7 @@ const OPEN_USAGE: &str = "usage: open <side-by-side|stacked|tab> <path>";
 ///
 /// Completed like a setting name, but they take no `=`, so completion gives
 /// them a space instead of a separator.
-const COMMANDS: &[&str] = &["open", "close", "help", "quit", "qall"];
+const COMMANDS: &[&str] = &["open", "close", "reload", "help", "quit", "qall"];
 
 /// What a typed line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +79,8 @@ pub(crate) enum Command {
     Close,
     /// Open another document (`:open tab notes.md`).
     Open(OpenTarget, String),
+    /// Read the focused document again from its file (`:reload`, `:e`).
+    Reload,
     /// A command that was recognised but not usable as typed; the string is
     /// the message to show.
     Invalid(String),
@@ -107,6 +109,9 @@ pub(crate) fn parse(line: &str) -> Command {
         "q" | "quit" => return Command::Quit,
         "qa" | "qall" | "quitall" => return Command::QuitAll,
         "close" => return Command::Close,
+        // vim's `:e` with no file name reads the current one again; diple has
+        // no other use for the word, so the short spelling is free to take.
+        "reload" | "e" | "edit" => return Command::Reload,
         _ => {}
     }
     if let Some(rest) = strip_word(line, "open") {
@@ -550,6 +555,14 @@ mod tests {
         assert_eq!(parse("qa"), Command::QuitAll);
         assert_eq!(parse("qall"), Command::QuitAll);
         assert_eq!(parse("q"), Command::Quit);
+    }
+
+    #[test]
+    fn reload_has_vims_spellings_too() {
+        assert_eq!(parse("reload"), Command::Reload);
+        assert_eq!(parse("e"), Command::Reload);
+        assert_eq!(parse("edit"), Command::Reload);
+        assert_eq!(complete("rel").line, "reload ");
     }
 
     #[test]

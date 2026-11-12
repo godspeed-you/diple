@@ -60,6 +60,13 @@ impl TocState {
         }
     }
 
+    /// Forget the derived entries, because the document they came from was
+    /// replaced. The next [`TocState::ensure`] derives them afresh.
+    pub(crate) fn invalidate(&mut self) {
+        self.entries.clear();
+        self.built = false;
+    }
+
     /// Number of entries.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
